@@ -72,6 +72,15 @@ static void DecodeOne(const float *encoder_out, int32_t num_rows,
 
   int32_t max_symbols_per_frame = 10;
 
+  // Decoder states from BEFORE the last emitted token. The stream must save
+  // these (not the post-token states): the next chunk rebuilds decoder_input
+  // from r.tokens.back() and runs the decoder on it again, so saving the
+  // post-token states would feed the last token into the prediction network
+  // TWICE per chunk boundary. The accumulated state drift makes the joiner
+  // increasingly blank-dominant over long streams (words vanish). Mirrors
+  // online-transducer-greedy-search-nemo-parakeet-unified-decoder.cc.
+  std::vector<Ort::Value> last_token_decoder_states;
+
   for (int32_t t = 0; t != num_rows; ++t) {
     Ort::Value cur_encoder_out = Ort::Value::CreateTensor(
         memory_info, const_cast<float *>(encoder_out) + t * num_cols, num_cols,
@@ -96,9 +105,11 @@ static void DecodeOne(const float *encoder_out, int32_t num_rows,
 
         decoder_input = BuildDecoderInput(y, model->Allocator());
 
-        // last decoder state becomes the current state for the first chunk
-        decoder_output_pair = model->RunDecoder(
-            std::move(decoder_input), std::move(decoder_output_pair.second));
+        auto next_decoder_output_pair = model->RunDecoder(
+            std::move(decoder_input),
+            BuildStateViews(&decoder_output_pair.second));
+        last_token_decoder_states = std::move(decoder_output_pair.second);
+        decoder_output_pair = std::move(next_decoder_output_pair);
       } else {
         ++r.num_trailing_blanks;
         break;
@@ -107,7 +118,7 @@ static void DecodeOne(const float *encoder_out, int32_t num_rows,
   }
 
   if (emitted) {
-    s->SetNeMoDecoderStates(std::move(decoder_output_pair.second));
+    s->SetNeMoDecoderStates(std::move(last_token_decoder_states));
   }
 
   r.frame_offset += num_rows;
