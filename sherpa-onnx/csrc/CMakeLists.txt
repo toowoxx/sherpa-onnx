@@ -344,6 +344,17 @@ if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
     offline-speaker-segmentation-pyannote-model-config.cc
     offline-speaker-segmentation-pyannote-model.cc
   )
+
+  # Streaming Sortformer diarization (toowoxx). Rides the speaker-diarization
+  # switch because it is an alternative implementation of the same capability;
+  # a caller that disabled diarization does not want half of it back.
+  list(APPEND sources
+    sortformer-aosc.cc
+    sortformer-diarization-config.cc
+    sortformer-model.cc
+    sortformer-post-processing.cc
+    streaming-sortformer-diarization.cc
+  )
 endif()
 
 if(APPLE)
