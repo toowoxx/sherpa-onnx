@@ -27,6 +27,7 @@ set(sources
   lfr.cc
   lodr-fst.cc
   math.cc
+  nemo-frontend.cc
   normal-data-generator.cc
   offline-canary-model-config.cc
   offline-canary-model.cc
