@@ -43,6 +43,7 @@ endif()
 if(SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
   list(APPEND sources
     offline-speaker-diarization.cc
+    streaming-sortformer-diarization.cc
   )
 endif()
 
