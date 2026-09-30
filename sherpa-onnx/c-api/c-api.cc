@@ -48,6 +48,7 @@
 
 #if SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION == 1
 #include "sherpa-onnx/csrc/offline-speaker-diarization.h"
+#include "sherpa-onnx/csrc/streaming-sortformer-diarization.h"
 #endif
 
 #define SHERPA_ONNX_OR(x, y) (x ? x : y)
@@ -3728,4 +3729,139 @@ const char *SherpaOfflineDiacritizationAddDiacritics(
 void SherpaOfflineDiacritizationFreeText(const char *text) {
   if (!text) return;
   delete[] text;
+}
+
+// Streaming Sortformer diarization
+//
+// C twin of sherpa-onnx/jni/streaming-sortformer-diarization.cc. Both wrap the
+// same C++ session; this one exists for consumers that cannot reach JNI, which
+// on Apple platforms is all of them.
+
+struct SherpaOnnxStreamingSortformerDiarization {
+  std::unique_ptr<sherpa_onnx::StreamingSortformerDiarization> impl;
+};
+
+const SherpaOnnxStreamingSortformerDiarization *
+SherpaOnnxCreateStreamingSortformerDiarization(
+    const SherpaOnnxStreamingSortformerDiarizationConfig *config) {
+  if (!config || !config->model) {
+    SHERPA_ONNX_LOGE("model is required for Sortformer diarization");
+    return nullptr;
+  }
+
+  sherpa_onnx::SortformerDiarizationConfig c;
+  c.model = config->model;
+  // Non-positive means "engine default", matching how every other C-api config
+  // treats num_threads; passing 0 straight through would create a thread pool
+  // of zero and fail deep inside the runtime instead of here.
+  if (config->num_threads > 0) {
+    c.num_threads = config->num_threads;
+  }
+  c.debug = config->debug != 0;
+  if (config->provider) {
+    c.provider = config->provider;
+  }
+
+  if (!c.Validate()) {
+    SHERPA_ONNX_LOGE("Errors in Sortformer diarization config");
+    return nullptr;
+  }
+
+  auto ans = new SherpaOnnxStreamingSortformerDiarization;
+  ans->impl =
+      std::make_unique<sherpa_onnx::StreamingSortformerDiarization>(c);
+  return ans;
+}
+
+void SherpaOnnxDestroyStreamingSortformerDiarization(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  delete sd;
+}
+
+int32_t SherpaOnnxStreamingSortformerDiarizationGetSampleRate(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  if (!sd) return 0;
+  return sd->impl->SampleRate();
+}
+
+void SherpaOnnxStreamingSortformerDiarizationAcceptWaveform(
+    const SherpaOnnxStreamingSortformerDiarization *sd, const float *samples,
+    int32_t n) {
+  if (!sd || n <= 0) return;
+  if (!samples) {
+    SHERPA_ONNX_LOGE("samples is NULL with n=%d", n);
+    return;
+  }
+  const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)
+      ->impl->AcceptWaveform(samples, n);
+}
+
+float SherpaOnnxStreamingSortformerDiarizationProcessedSeconds(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  if (!sd) return 0;
+  return sd->impl->ProcessedSeconds();
+}
+
+float SherpaOnnxStreamingSortformerDiarizationAcceptedSeconds(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  if (!sd) return 0;
+  return sd->impl->AcceptedSeconds();
+}
+
+const SherpaOnnxStreamingSortformerDiarizationSegment *
+SherpaOnnxStreamingSortformerDiarizationFinalize(
+    const SherpaOnnxStreamingSortformerDiarization *sd, int32_t *num_segments) {
+  if (!num_segments) return nullptr;
+  *num_segments = 0;
+  if (!sd) return nullptr;
+
+  const auto &segments =
+      const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)
+          ->impl->Finalize();
+  if (segments.empty()) return nullptr;
+
+  auto *ans = new SherpaOnnxStreamingSortformerDiarizationSegment[segments
+                                                                     .size()];
+  for (size_t i = 0; i != segments.size(); ++i) {
+    ans[i].start = segments[i].start;
+    ans[i].end = segments[i].end;
+    ans[i].speaker = segments[i].speaker;
+  }
+  *num_segments = static_cast<int32_t>(segments.size());
+  return ans;
+}
+
+void SherpaOnnxStreamingSortformerDiarizationDestroySegments(
+    const SherpaOnnxStreamingSortformerDiarizationSegment *segments) {
+  delete[] segments;
+}
+
+void SherpaOnnxStreamingSortformerDiarizationReset(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  if (!sd) return;
+  const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)->impl->Reset();
+}
+
+const char *SherpaOnnxStreamingSortformerDiarizationModelSha256(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  if (!sd) return nullptr;
+  // Owned by the session: the C++ side returns a reference to a member that
+  // outlives every call, so no copy and no free function is needed. Copying
+  // here would hand callers a buffer they must remember to release for a value
+  // that never changes.
+  return sd->impl->ModelSha256().c_str();
+}
+
+int32_t SherpaOnnxStreamingSortformerDiarizationNumFrames(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  if (!sd) return 0;
+  return sd->impl->NumFrames();
+}
+
+const float *SherpaOnnxStreamingSortformerDiarizationRawTrack(
+    const SherpaOnnxStreamingSortformerDiarization *sd) {
+  if (!sd) return nullptr;
+  const auto &track = sd->impl->RawTrack();
+  if (track.empty()) return nullptr;
+  return track.data();
 }

@@ -4697,6 +4697,169 @@ SHERPA_ONNX_API const char *SherpaOfflineDiacritizationAddDiacritics(
  */
 SHERPA_ONNX_API void SherpaOfflineDiacritizationFreeText(const char *text);
 
+// Streaming Sortformer diarization
+//
+// C twin of the JNI surface in sherpa-onnx/kotlin-api/StreamingSortformerDiarization.kt.
+// It exists so non-JVM consumers — Swift/iOS in particular — can drive the same
+// engine: every Apple-side wrapper binds this C API, JNI is unreachable from
+// Swift, and the C++ class in csrc/ is not a stable boundary to bind against.
+//
+// The session is STREAMING and single-use per recording: feed audio with
+// AcceptWaveform, then call Finalize once to flush the tail and post-process.
+// Finalize is idempotent.
+
+/**
+ * @brief Configuration for streaming Sortformer diarization.
+ *
+ * Mirrors the fields the JNI config exposes; the C++ struct additionally
+ * carries streaming/frontend/post-processing sub-configs, which keep their
+ * defaults here. The defaults reproduce NeMo's published configuration of the
+ * checkpoint (see sortformer-diarization-config.h), and keeping them fixed
+ * makes the C API and the JNI surface compute the same posteriors from the
+ * same audio.
+ */
+typedef struct SherpaOnnxStreamingSortformerDiarizationConfig {
+  /** Path to the Sortformer ONNX model file. */
+  const char *model;
+  /** Number of intra-op threads. 0 or negative selects the engine default. */
+  int32_t num_threads;
+  /** Non-zero enables verbose engine logging. */
+  int32_t debug;
+  /** Execution provider, e.g. "cpu". NULL selects "cpu". */
+  const char *provider;
+} SherpaOnnxStreamingSortformerDiarizationConfig;
+
+SHERPA_ONNX_API typedef struct SherpaOnnxStreamingSortformerDiarization
+    SherpaOnnxStreamingSortformerDiarization;
+
+/**
+ * @brief One diarization segment produced by Finalize().
+ */
+typedef struct SherpaOnnxStreamingSortformerDiarizationSegment {
+  /** Segment start time in seconds. */
+  float start;
+  /** Segment end time in seconds. */
+  float end;
+  /** Speaker slot, in [0, 4) — Sortformer has a fixed slot count. */
+  int32_t speaker;
+} SherpaOnnxStreamingSortformerDiarizationSegment;
+
+/**
+ * @brief Create a streaming Sortformer diarization session.
+ *
+ * @param config Configuration. Must not be NULL, and config->model must name a
+ *               readable ONNX file.
+ * @return A new session, or NULL if the model could not be loaded. Free it with
+ *         SherpaOnnxDestroyStreamingSortformerDiarization().
+ */
+SHERPA_ONNX_API const SherpaOnnxStreamingSortformerDiarization *
+SherpaOnnxCreateStreamingSortformerDiarization(
+    const SherpaOnnxStreamingSortformerDiarizationConfig *config);
+
+/**
+ * @brief Destroy a session created by
+ *        SherpaOnnxCreateStreamingSortformerDiarization().
+ */
+SHERPA_ONNX_API void SherpaOnnxDestroyStreamingSortformerDiarization(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
+/**
+ * @brief Sample rate the session requires. The engine has no resampler: audio
+ *        at any other rate produces wrong timestamps rather than an error.
+ */
+SHERPA_ONNX_API int32_t
+SherpaOnnxStreamingSortformerDiarizationGetSampleRate(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
+/**
+ * @brief Feed mono float samples in [-1, 1] at the required sample rate.
+ *
+ * @param samples Sample buffer. May be NULL only when n is 0.
+ * @param n Number of samples.
+ */
+SHERPA_ONNX_API void SherpaOnnxStreamingSortformerDiarizationAcceptWaveform(
+    const SherpaOnnxStreamingSortformerDiarization *sd, const float *samples,
+    int32_t n);
+
+/**
+ * @brief Seconds of audio the engine has actually run chunks over.
+ *
+ * Lags AcceptedSeconds by up to one chunk: audio is buffered until a full chunk
+ * is available. The difference is the backlog, which is what a caller watches
+ * to know whether it is keeping up.
+ */
+SHERPA_ONNX_API float SherpaOnnxStreamingSortformerDiarizationProcessedSeconds(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
+/** @brief Seconds of audio handed to AcceptWaveform so far. */
+SHERPA_ONNX_API float SherpaOnnxStreamingSortformerDiarizationAcceptedSeconds(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
+/**
+ * @brief Flush the tail, post-process, and return disjoint segments.
+ *
+ * Idempotent: calling it twice returns the same segments without reprocessing.
+ *
+ * @param sd Session.
+ * @param num_segments Out parameter receiving the segment count. Must not be
+ *                     NULL.
+ * @return A newly allocated array of num_segments entries, or NULL when there
+ *         are none. Free it with
+ *         SherpaOnnxStreamingSortformerDiarizationDestroySegments().
+ */
+SHERPA_ONNX_API const SherpaOnnxStreamingSortformerDiarizationSegment *
+SherpaOnnxStreamingSortformerDiarizationFinalize(
+    const SherpaOnnxStreamingSortformerDiarization *sd, int32_t *num_segments);
+
+/**
+ * @brief Free a segment array returned by
+ *        SherpaOnnxStreamingSortformerDiarizationFinalize().
+ */
+SHERPA_ONNX_API void SherpaOnnxStreamingSortformerDiarizationDestroySegments(
+    const SherpaOnnxStreamingSortformerDiarizationSegment *segments);
+
+/**
+ * @brief Reset the session so it can diarize a new stream without reloading the
+ *        model.
+ */
+SHERPA_ONNX_API void SherpaOnnxStreamingSortformerDiarizationReset(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
+/**
+ * @brief SHA-256 of the model file this session loaded, lowercase hex.
+ *
+ * Exists because different model files can occupy the same path, so a log
+ * line naming the model PATH does not say what ran. The returned string is
+ * owned by the session and stays valid until it is destroyed.
+ */
+SHERPA_ONNX_API const char *SherpaOnnxStreamingSortformerDiarizationModelSha256(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
+/**
+ * @brief Row count of the raw posterior track.
+ *
+ * Valid after Finalize(); before it, only the chunks committed so far are
+ * counted and the tail is not yet trimmed to the audio.
+ */
+SHERPA_ONNX_API int32_t SherpaOnnxStreamingSortformerDiarizationNumFrames(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
+/**
+ * @brief Raw per-frame posteriors, flat and row-major: NumFrames() rows of four
+ *        sigmoid elements, element `s` of frame `f` at `[f * 4 + s]`.
+ *
+ * Lets a caller compare the posteriors element by element with a reference
+ * track. Finalize()'s segments cannot stand in: they have been through argmax
+ * and hysteresis, so a segment-level comparison passes or fails for reasons
+ * unrelated to the posteriors, and a divergence that post-processing absorbs
+ * stays invisible.
+ *
+ * The buffer is owned by the session and stays valid until the next
+ * AcceptWaveform(), Reset(), or destruction.
+ */
+SHERPA_ONNX_API const float *SherpaOnnxStreamingSortformerDiarizationRawTrack(
+    const SherpaOnnxStreamingSortformerDiarization *sd);
+
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
 #endif
