@@ -1,4 +1,9 @@
 # Copyright (c)  2022-2023  Xiaomi Corporation
+#
+# SPEC (toowoxx): this file downloads the csukuangfj prebuilt of ONNX Runtime
+# 1.28.0, one minor above the 1.27.1 that most other platform files in this
+# directory download. The outputs of two builds are comparable only when both
+# use the same ONNX Runtime version.
 message(STATUS "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}")
 message(STATUS "CMAKE_SYSTEM_PROCESSOR: ${CMAKE_SYSTEM_PROCESSOR}")
 
@@ -14,18 +19,18 @@ if(NOT BUILD_SHARED_LIBS)
   message(FATAL_ERROR "This file is for building shared libraries. BUILD_SHARED_LIBS: ${BUILD_SHARED_LIBS}")
 endif()
 
-set(onnxruntime_URL  "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.27.1/onnxruntime-linux-x64-glibc2_17-Release-1.27.1.zip")
-set(onnxruntime_HASH "SHA256=3b49aa3cded130124e1822c9683f0450bd120390f14a626369fd7a02f5b5f64e")
+set(onnxruntime_URL  "https://github.com/csukuangfj/onnxruntime-libs/releases/download/v1.28.0/onnxruntime-linux-x64-glibc2_17-Release-1.28.0.zip")
+set(onnxruntime_HASH "SHA256=ab49a2342682aa13a55818c371ac42e8f23d9d92b696ef45ee7816e0d7c89ba0")
 
 # If you don't have access to the Internet,
 # please download onnxruntime to one of the following locations.
 # You can add more if you want.
 set(possible_file_locations
-  $ENV{HOME}/Downloads/onnxruntime-linux-x64-glibc2_17-Release-1.27.1.zip
-  ${CMAKE_SOURCE_DIR}/onnxruntime-linux-x64-glibc2_17-Release-1.27.1.zip
-  ${CMAKE_BINARY_DIR}/onnxruntime-linux-x64-glibc2_17-Release-1.27.1.zip
-  /tmp/onnxruntime-linux-x64-glibc2_17-Release-1.27.1.zip
-  /star-fj/fangjun/download/github/onnxruntime-linux-x64-glibc2_17-Release-1.27.1.zip
+  $ENV{HOME}/Downloads/onnxruntime-linux-x64-glibc2_17-Release-1.28.0.zip
+  ${CMAKE_SOURCE_DIR}/onnxruntime-linux-x64-glibc2_17-Release-1.28.0.zip
+  ${CMAKE_BINARY_DIR}/onnxruntime-linux-x64-glibc2_17-Release-1.28.0.zip
+  /tmp/onnxruntime-linux-x64-glibc2_17-Release-1.28.0.zip
+  /star-fj/fangjun/download/github/onnxruntime-linux-x64-glibc2_17-Release-1.28.0.zip
 )
 
 foreach(f IN LISTS possible_file_locations)
