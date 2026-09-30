@@ -83,12 +83,31 @@ struct FeatureExtractorConfig {
 
   bool is_t_one = false;
 
+  // NeMo log-mel features computed with the shared NeMo frontend
+  // (nemo-frontend.h, online-nemo-fbank.h): 16 kHz, a symmetric 400-sample
+  // Hann window every 160 samples, a 512-point FFT, Slaney mel bins from 0 to
+  // 8000 Hz, whole-stream pre-emphasis 0.97 and log(x + 2^-24). feature_dim
+  // sets the number of mel bins; the kaldi-native-fbank options above do not
+  // apply, and samples are always read in [-1, 1]. Set internally, through
+  // SetNemoFeatureMode, by the streaming NeMo transducer recognizer
+  // (online-recognizer-transducer-nemo-impl.h).
+  bool is_nemo = false;
+
   bool round_to_power_of_two = true;
 
   std::string ToString() const;
 
   void Register(ParseOptions *po);
 };
+
+// Selects the NeMo mode (is_nemo) in `config` for a NeMo-trained model with
+// `feature_dim` mel bins. `normalize_type` is the feature normalization the
+// model's metadata asks for, empty for none. The NeMo mode applies no feature
+// normalization, so a model that asks for one is refused: the call logs an
+// error naming the normalization and exits, instead of letting the model run
+// on unnormalized features.
+void SetNemoFeatureMode(int32_t feature_dim, const std::string &normalize_type,
+                        FeatureExtractorConfig *config);
 
 class FeatureExtractor {
  public:

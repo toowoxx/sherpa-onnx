@@ -106,6 +106,7 @@ set(sources
   online-model-config.cc
   online-nemo-ctc-model-config.cc
   online-nemo-ctc-model.cc
+  online-nemo-fbank.cc
   online-paraformer-model-config.cc
   online-paraformer-model.cc
   online-recognizer-impl.cc
@@ -872,6 +873,13 @@ if(SHERPA_ONNX_ENABLE_TESTS)
 
   list(APPEND sherpa_onnx_test_srcs
     speaker-embedding-manager-test.cc
+  )
+
+  # The NeMo feature mode's tests on a generated signal (toowoxx). They read
+  # no input, so they build like every other test here. The mode is not
+  # diarization, so they do not depend on the diarization switch.
+  list(APPEND sherpa_onnx_test_srcs
+    features-nemo-test.cc
   )
 
   function(sherpa_onnx_add_test source)

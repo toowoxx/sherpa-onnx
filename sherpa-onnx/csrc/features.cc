@@ -13,6 +13,8 @@
 
 #include "kaldi-native-fbank/csrc/online-feature.h"
 #include "sherpa-onnx/csrc/macros.h"
+#include "sherpa-onnx/csrc/nemo-frontend.h"
+#include "sherpa-onnx/csrc/online-nemo-fbank.h"
 #include "sherpa-onnx/csrc/resample.h"
 
 namespace sherpa_onnx {
@@ -56,6 +58,29 @@ std::string FeatureExtractorConfig::ToString() const {
   return os.str();
 }
 
+void SetNemoFeatureMode(int32_t feature_dim, const std::string &normalize_type,
+                        FeatureExtractorConfig *config) {
+  if (!normalize_type.empty()) {
+#if __OHOS__
+    SHERPA_ONNX_LOGE(
+        "The model's metadata asks for the feature normalization "
+        "'%{public}s', which the streaming NeMo feature mode does not apply. "
+        "Refusing the model instead of computing its features unnormalized.",
+        normalize_type.c_str());
+#else
+    SHERPA_ONNX_LOGE(
+        "The model's metadata asks for the feature normalization '%s', which "
+        "the streaming NeMo feature mode does not apply. Refusing the model "
+        "instead of computing its features unnormalized.",
+        normalize_type.c_str());
+#endif
+    SHERPA_ONNX_EXIT(-1);
+  }
+
+  config->feature_dim = feature_dim;
+  config->is_nemo = true;
+}
+
 class FeatureExtractor::Impl {
  public:
   explicit Impl(const FeatureExtractorConfig &config) : config_(config) {
@@ -65,6 +90,8 @@ class FeatureExtractor::Impl {
       InitWhisper();
     } else if (config_.is_t_one) {
       InitRawAudioSamples();
+    } else if (config_.is_nemo) {
+      InitNemo();
     } else {
       InitFbank();
     }
@@ -144,6 +171,9 @@ class FeatureExtractor::Impl {
     } else if (mfcc_) {
       mfcc_->InputFinished();
       return;
+    } else if (nemo_fbank_) {
+      nemo_fbank_->InputFinished();
+      return;
     }
 
     SHERPA_ONNX_LOGE("unreachable code");
@@ -159,6 +189,8 @@ class FeatureExtractor::Impl {
       return raw_audio_->NumFramesReady();
     } else if (mfcc_) {
       return mfcc_->NumFramesReady();
+    } else if (nemo_fbank_) {
+      return nemo_fbank_->NumFramesReady();
     }
     SHERPA_ONNX_LOGE("unreachable code");
     SHERPA_ONNX_EXIT(-1);
@@ -175,6 +207,8 @@ class FeatureExtractor::Impl {
       return raw_audio_->IsLastFrame(frame);
     } else if (mfcc_) {
       return mfcc_->IsLastFrame(frame);
+    } else if (nemo_fbank_) {
+      return nemo_fbank_->IsLastFrame(frame);
     }
 
     SHERPA_ONNX_LOGE("unreachable code");
@@ -221,6 +255,8 @@ class FeatureExtractor::Impl {
       return mfcc_opts_.num_ceps;
     } else if (raw_audio_) {
       return raw_audio_->Dim();
+    } else if (nemo_fbank_) {
+      return nemo_fbank_->Dim();
     }
 
     SHERPA_ONNX_LOGE("unreachable code");
@@ -243,6 +279,9 @@ class FeatureExtractor::Impl {
     } else if (mfcc_) {
       mfcc_->AcceptWaveform(sampling_rate, waveform, n);
       return;
+    } else if (nemo_fbank_) {
+      nemo_fbank_->AcceptWaveform(sampling_rate, waveform, n);
+      return;
     }
 
     SHERPA_ONNX_LOGE("unreachable code");
@@ -258,6 +297,8 @@ class FeatureExtractor::Impl {
       return raw_audio_->GetFrame(frame_index);
     } else if (mfcc_) {
       return mfcc_->GetFrame(frame_index);
+    } else if (nemo_fbank_) {
+      return nemo_fbank_->GetFrame(frame_index);
     }
 
     SHERPA_ONNX_LOGE("unreachable code");
@@ -277,6 +318,9 @@ class FeatureExtractor::Impl {
       return;
     } else if (mfcc_) {
       mfcc_->Pop(discard_num);
+      return;
+    } else if (nemo_fbank_) {
+      nemo_fbank_->Pop(discard_num);
       return;
     }
 
@@ -350,11 +394,31 @@ class FeatureExtractor::Impl {
     raw_audio_ = std::make_unique<knf::OnlineRawAudioSamples>(opts_raw_audio_);
   }
 
+  // NeMo's settings are fixed (NemoFrontendConfig); only the mel bin count
+  // comes from the model. Input at another rate is resampled to the frontend's
+  // 16 kHz, as the Whisper mode does for its own rate. The frontend reads
+  // samples in [-1, 1], so normalize_samples is forced to true, as in the
+  // Whisper mode: left false, AcceptWaveform would scale every sample by 32768.
+  void InitNemo() {
+    config_.normalize_samples = true;
+    NemoFrontendConfig nemo_config;
+    nemo_config.n_mels = config_.feature_dim;
+    if (!nemo_config.Validate()) {
+      SHERPA_ONNX_LOGE("Invalid NeMo feature config: %s",
+                       nemo_config.ToString().c_str());
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    nemo_fbank_ = std::make_unique<OnlineNemoFbank>(nemo_config);
+    config_.sampling_rate = nemo_config.sample_rate;
+  }
+
  private:
   std::unique_ptr<knf::OnlineFbank> fbank_;
   std::unique_ptr<knf::OnlineMfcc> mfcc_;
   std::unique_ptr<knf::OnlineWhisperFbank> whisper_fbank_;
   std::unique_ptr<knf::OnlineRawAudioSamples> raw_audio_;
+  std::unique_ptr<OnlineNemoFbank> nemo_fbank_;
   knf::FbankOptions opts_;
   knf::RawAudioSamplesOptions opts_raw_audio_;
   knf::MfccOptions mfcc_opts_;

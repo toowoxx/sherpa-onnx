@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "sherpa-onnx/csrc/features.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-recognizer-impl.h"
 #include "sherpa-onnx/csrc/online-recognizer.h"
@@ -344,16 +345,17 @@ class OnlineRecognizerTransducerNeMoImpl : public OnlineRecognizerImpl {
   }
 
   void PostInit() {
-    config_.feat_config.feature_dim = model_->FeatureDim();
-
-    config_.feat_config.low_freq = 0;
-    config_.feat_config.high_freq = 8000;
-    config_.feat_config.is_librosa = true;
-    config_.feat_config.remove_dc_offset = false;
-    config_.feat_config.window_type = "hann";
-    config_.feat_config.dither = 0;
-    config_.feat_config.nemo_normalize_type =
-        model_->FeatureNormalizationMethod();
+    // The model was trained on NeMo's log-mel features, so the stream
+    // computes them with the shared NeMo frontend (features.h, is_nemo).
+    // kaldi-native-fbank differs from NeMo in the log floor, the frame
+    // positions, the pre-emphasis and the window, and it stays the extractor
+    // of every other recognizer. The mode takes only the mel bin count from
+    // the model and ignores the kaldi-native-fbank options. This streaming
+    // path applies no feature normalization, so SetNemoFeatureMode refuses a
+    // model whose metadata asks for one, here at load.
+    SetNemoFeatureMode(model_->FeatureDim(),
+                       model_->FeatureNormalizationMethod(),
+                       &config_.feat_config);
 
     int32_t vocab_size = model_->VocabSize();
 
