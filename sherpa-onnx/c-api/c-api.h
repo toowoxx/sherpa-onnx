@@ -43,6 +43,22 @@
  *   - heap-allocated for the caller and must be released with the matching
  *     `Free`/`Destroy` API
  *
+ * Exceptions in the streaming ASR, speaker embedding extractor and streaming
+ * Sortformer diarization functions:
+ *
+ * - The functions of these groups that run the engine or allocate catch every
+ *   C++ exception, log it and return a failure value: NULL from a function
+ *   that returns a pointer, 0 from one that returns a status. These are the
+ *   constructors, including their `*OHOS()` variants, the stream constructors,
+ *   AcceptWaveform, DecodeOnlineStream, DecodeMultipleOnlineStreams,
+ *   GetOnlineStreamResult, GetOnlineStreamResultAsJson, InputFinished,
+ *   SetOption, Reset, ComputeEmbedding and Finalize. A status is 1 on success.
+ *   A failure, such as ONNX Runtime rejecting a damaged model file, would
+ *   otherwise end the process through std::terminate.
+ * - The functions of these groups that only read a stored field or compare
+ *   counters, such as IsOnlineStreamReady, IsEndpoint, Dim, GetSampleRate,
+ *   ProcessedSeconds or ModelSha256, call the engine directly.
+ *
  * General usage pattern:
  *
  * 1. Zero-initialize a config struct with `memset(&config, 0, sizeof(config))`
@@ -442,8 +458,8 @@ typedef struct SherpaOnnxOnlineStream SherpaOnnxOnlineStream;
  *
  * @param config Recognizer configuration.
  * @return A recognizer handle on success, or NULL if the configuration is
- *         invalid. The caller owns the returned object and must free it with
- *         SherpaOnnxDestroyOnlineRecognizer().
+ *         invalid or a model fails to load. The caller owns the returned
+ *         object and must free it with SherpaOnnxDestroyOnlineRecognizer().
  *
  * @code
  * SherpaOnnxOnlineRecognizerConfig config;
@@ -496,8 +512,9 @@ SHERPA_ONNX_API void SherpaOnnxDestroyOnlineRecognizer(
  * create multiple streams.
  *
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().
- * @return A newly created stream. The caller owns the returned object and must
- *         free it with SherpaOnnxDestroyOnlineStream().
+ * @return A newly created stream, or NULL on failure. The caller owns the
+ *         returned object and must free it with
+ *         SherpaOnnxDestroyOnlineStream().
  *
  * @code
  * const SherpaOnnxWave *wave = SherpaOnnxReadWave(
@@ -515,8 +532,9 @@ SHERPA_ONNX_API const SherpaOnnxOnlineStream *SherpaOnnxCreateOnlineStream(
  *
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().
  * @param hotwords Hotwords text to associate with the stream.
- * @return A newly created stream. The caller owns the returned object and must
- *         free it with SherpaOnnxDestroyOnlineStream().
+ * @return A newly created stream, or NULL on failure. The caller owns the
+ *         returned object and must free it with
+ *         SherpaOnnxDestroyOnlineStream().
  *
  * @code
  * const SherpaOnnxOnlineStream *stream =
@@ -554,6 +572,7 @@ SHERPA_ONNX_API void SherpaOnnxDestroyOnlineStream(
  * @param sample_rate Sample rate of @p samples.
  * @param samples Pointer to @p n samples in the range [-1, 1].
  * @param n Number of samples.
+ * @return 1 on success; 0 on failure, which is logged.
  *
  * @code
  * int32_t start = 0;
@@ -563,7 +582,7 @@ SHERPA_ONNX_API void SherpaOnnxDestroyOnlineStream(
  * @endcode
  * @see SherpaOnnxCreateOnlineStream, SherpaOnnxDecodeOnlineStream
  */
-SHERPA_ONNX_API void SherpaOnnxOnlineStreamAcceptWaveform(
+SHERPA_ONNX_API int32_t SherpaOnnxOnlineStreamAcceptWaveform(
     const SherpaOnnxOnlineStream *stream, int32_t sample_rate,
     const float *samples, int32_t n);
 
@@ -591,6 +610,7 @@ SherpaOnnxIsOnlineStreamReady(const SherpaOnnxOnlineRecognizer *recognizer,
  *
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().
  * @param stream A pointer returned by SherpaOnnxCreateOnlineStream().
+ * @return 1 on success; 0 on failure, which is logged.
  *
  * @code
  * SherpaOnnxOnlineStreamAcceptWaveform(stream, sample_rate, samples, n);
@@ -600,9 +620,9 @@ SherpaOnnxIsOnlineStreamReady(const SherpaOnnxOnlineRecognizer *recognizer,
  * @endcode
  * @see SherpaOnnxIsOnlineStreamReady, SherpaOnnxGetOnlineStreamResult
  */
-SHERPA_ONNX_API void SherpaOnnxDecodeOnlineStream(
-    const SherpaOnnxOnlineRecognizer *recognizer,
-    const SherpaOnnxOnlineStream *stream);
+SHERPA_ONNX_API int32_t
+SherpaOnnxDecodeOnlineStream(const SherpaOnnxOnlineRecognizer *recognizer,
+                             const SherpaOnnxOnlineStream *stream);
 
 /**
  * @brief Decode multiple streaming ASR streams in parallel.
@@ -613,13 +633,14 @@ SHERPA_ONNX_API void SherpaOnnxDecodeOnlineStream(
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().
  * @param streams Array of @p n stream pointers.
  * @param n Number of streams in @p streams.
+ * @return 1 on success; 0 on failure, which is logged.
  *
  * @code
  * const SherpaOnnxOnlineStream *streams[2] = {stream1, stream2};
  * SherpaOnnxDecodeMultipleOnlineStreams(recognizer, streams, 2);
  * @endcode
  */
-SHERPA_ONNX_API void SherpaOnnxDecodeMultipleOnlineStreams(
+SHERPA_ONNX_API int32_t SherpaOnnxDecodeMultipleOnlineStreams(
     const SherpaOnnxOnlineRecognizer *recognizer,
     const SherpaOnnxOnlineStream **streams, int32_t n);
 
@@ -631,7 +652,7 @@ SHERPA_ONNX_API void SherpaOnnxDecodeMultipleOnlineStreams(
  *
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().
  * @param stream A pointer returned by SherpaOnnxCreateOnlineStream().
- * @return A newly allocated result snapshot.
+ * @return A newly allocated result snapshot, or NULL on failure.
  *
  * @code
  * const SherpaOnnxOnlineRecognizerResult *r =
@@ -666,7 +687,7 @@ SHERPA_ONNX_API void SherpaOnnxDestroyOnlineRecognizerResult(
  *
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().
  * @param stream A pointer returned by SherpaOnnxCreateOnlineStream().
- * @return A newly allocated JSON string. Free it with
+ * @return A newly allocated JSON string, or NULL on failure. Free it with
  *         SherpaOnnxDestroyOnlineStreamResultJson().
  *
  * @code
@@ -701,6 +722,7 @@ SHERPA_ONNX_API void SherpaOnnxDestroyOnlineStreamResultJson(const char *s);
  *
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().
  * @param stream A pointer returned by SherpaOnnxCreateOnlineStream().
+ * @return 1 on success; 0 on failure, which is logged.
  *
  * @code
  * if (SherpaOnnxOnlineStreamIsEndpoint(recognizer, stream)) {
@@ -708,9 +730,9 @@ SHERPA_ONNX_API void SherpaOnnxDestroyOnlineStreamResultJson(const char *s);
  * }
  * @endcode
  */
-SHERPA_ONNX_API void SherpaOnnxOnlineStreamReset(
-    const SherpaOnnxOnlineRecognizer *recognizer,
-    const SherpaOnnxOnlineStream *stream);
+SHERPA_ONNX_API int32_t
+SherpaOnnxOnlineStreamReset(const SherpaOnnxOnlineRecognizer *recognizer,
+                            const SherpaOnnxOnlineStream *stream);
 
 /**
  * @brief Signal end-of-input for a streaming ASR stream.
@@ -718,13 +740,14 @@ SHERPA_ONNX_API void SherpaOnnxOnlineStreamReset(
  * After calling this function, do not append more samples to the stream.
  *
  * @param stream A pointer returned by SherpaOnnxCreateOnlineStream().
+ * @return 1 on success; 0 on failure, which is logged.
  *
  * @code
  * SherpaOnnxOnlineStreamInputFinished(stream);
  * @endcode
  */
-SHERPA_ONNX_API void SherpaOnnxOnlineStreamInputFinished(
-    const SherpaOnnxOnlineStream *stream);
+SHERPA_ONNX_API int32_t
+SherpaOnnxOnlineStreamInputFinished(const SherpaOnnxOnlineStream *stream);
 
 /**
  * @brief Set a per-stream runtime option.
@@ -735,12 +758,13 @@ SHERPA_ONNX_API void SherpaOnnxOnlineStreamInputFinished(
  * @param stream A pointer returned by SherpaOnnxCreateOnlineStream().
  * @param key Option name.
  * @param value Option value represented as text.
+ * @return 1 on success; 0 on failure, which is logged.
  *
  * @code
  * SherpaOnnxOnlineStreamSetOption(stream, "is_final", "1");
  * @endcode
  */
-SHERPA_ONNX_API void SherpaOnnxOnlineStreamSetOption(
+SHERPA_ONNX_API int32_t SherpaOnnxOnlineStreamSetOption(
     const SherpaOnnxOnlineStream *stream, const char *key, const char *value);
 
 /**
@@ -3113,8 +3137,9 @@ typedef struct SherpaOnnxSpeakerEmbeddingExtractor
  * @brief Create a speaker embedding extractor.
  *
  * @param config Speaker embedding extractor configuration.
- * @return A newly allocated extractor on success, or NULL on error. Free it
- *         with SherpaOnnxDestroySpeakerEmbeddingExtractor().
+ * @return A newly allocated extractor on success, or NULL on error, such as a
+ *         model that fails to load. Free it with
+ *         SherpaOnnxDestroySpeakerEmbeddingExtractor().
  * @see SherpaOnnxSpeakerEmbeddingExtractorConfig, SherpaOnnxDestroySpeakerEmbeddingExtractor
  */
 SHERPA_ONNX_API const SherpaOnnxSpeakerEmbeddingExtractor *
@@ -3147,7 +3172,7 @@ SHERPA_ONNX_API int32_t SherpaOnnxSpeakerEmbeddingExtractorDim(
  * SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding().
  *
  * @param p A pointer returned by SherpaOnnxCreateSpeakerEmbeddingExtractor().
- * @return A newly allocated online stream. Free it with
+ * @return A newly allocated online stream, or NULL on failure. Free it with
  *         SherpaOnnxDestroyOnlineStream().
  */
 SHERPA_ONNX_API const SherpaOnnxOnlineStream *
@@ -3175,7 +3200,7 @@ SHERPA_ONNX_API int32_t SherpaOnnxSpeakerEmbeddingExtractorIsReady(
  * @param p A pointer returned by SherpaOnnxCreateSpeakerEmbeddingExtractor().
  * @param s A pointer returned by
  * SherpaOnnxSpeakerEmbeddingExtractorCreateStream().
- * @return A newly allocated embedding vector.
+ * @return A newly allocated embedding vector, or NULL on failure.
  *
  * @code
  * const SherpaOnnxOnlineStream *stream =
@@ -4487,8 +4512,8 @@ SherpaOnnxCreateOnlineSpeechDenoiserOHOS(
  *
  * @param config Recognizer configuration.
  * @param mgr HarmonyOS resource manager used to resolve bundled assets.
- * @return A newly allocated recognizer, or NULL on error. Free it with
- *         SherpaOnnxDestroyOnlineRecognizer().
+ * @return A newly allocated recognizer, or NULL on error, such as a model that
+ *         fails to load. Free it with SherpaOnnxDestroyOnlineRecognizer().
  */
 SHERPA_ONNX_API const SherpaOnnxOnlineRecognizer *
 SherpaOnnxCreateOnlineRecognizerOHOS(
@@ -4576,7 +4601,8 @@ SherpaOnnxCreateOnlinePunctuationOHOS(
  *
  * @param config Speaker embedding extractor configuration.
  * @param mgr HarmonyOS resource manager used to resolve bundled assets.
- * @return A newly allocated extractor, or NULL on error. Free it with
+ * @return A newly allocated extractor, or NULL on error, such as a model that
+ *         fails to load. Free it with
  *         SherpaOnnxDestroySpeakerEmbeddingExtractor().
  */
 SHERPA_ONNX_API const SherpaOnnxSpeakerEmbeddingExtractor *
@@ -4776,8 +4802,9 @@ SherpaOnnxStreamingSortformerDiarizationGetSampleRate(
  *
  * @param samples Sample buffer. May be NULL only when n is 0.
  * @param n Number of samples.
+ * @return 1 on success; 0 on failure.
  */
-SHERPA_ONNX_API void SherpaOnnxStreamingSortformerDiarizationAcceptWaveform(
+SHERPA_ONNX_API int32_t SherpaOnnxStreamingSortformerDiarizationAcceptWaveform(
     const SherpaOnnxStreamingSortformerDiarization *sd, const float *samples,
     int32_t n);
 
@@ -4803,8 +4830,8 @@ SHERPA_ONNX_API float SherpaOnnxStreamingSortformerDiarizationAcceptedSeconds(
  * @param sd Session.
  * @param num_segments Out parameter receiving the segment count. Must not be
  *                     NULL.
- * @return A newly allocated array of num_segments entries, or NULL when there
- *         are none. Free it with
+ * @return A newly allocated array of num_segments entries, which is empty
+ *         when there are none, or NULL on failure. Free it with
  *         SherpaOnnxStreamingSortformerDiarizationDestroySegments().
  */
 SHERPA_ONNX_API const SherpaOnnxStreamingSortformerDiarizationSegment *
@@ -4821,8 +4848,10 @@ SHERPA_ONNX_API void SherpaOnnxStreamingSortformerDiarizationDestroySegments(
 /**
  * @brief Reset the session so it can diarize a new stream without reloading the
  *        model.
+ *
+ * @return 1 on success; 0 on failure.
  */
-SHERPA_ONNX_API void SherpaOnnxStreamingSortformerDiarizationReset(
+SHERPA_ONNX_API int32_t SherpaOnnxStreamingSortformerDiarizationReset(
     const SherpaOnnxStreamingSortformerDiarization *sd);
 
 /**

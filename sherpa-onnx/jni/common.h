@@ -156,6 +156,19 @@ inline jstring SafeNewStringUTF(JNIEnv *env, const char *s) {
   return SafeNewStringUTF(env, std::string(s));
 }
 
+// The JNI functions of OnlineRecognizer, OnlineStream,
+// SpeakerEmbeddingExtractor and StreamingSortformerDiarization that run the
+// engine or allocate run that work inside SafeJNI: the constructors
+// newFromFile and newFromAsset, createStream, acceptWaveform, decode,
+// getResult, inputFinished, setOption, reset, compute and finalizeSession. A
+// C++ exception thrown there, such as ONNX Runtime rejecting a damaged model
+// file, arrives in Kotlin as a RuntimeException with its message, and a
+// constructor returns 0. An exception that left the native frame would end
+// the process through std::terminate. The functions of these classes that
+// only read a stored field or compare counters, such as isReady, isEndpoint,
+// dim, processedSeconds or modelSha256, call the engine directly. delete is
+// not wrapped, because a destructor is noexcept.
+
 // Template function for non-void return types
 template <typename Func, typename ReturnType>
 ReturnType SafeJNI(JNIEnv *env, const char *functionName, Func func,

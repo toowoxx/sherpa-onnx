@@ -273,13 +273,16 @@ Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_newFromAsset(JNIEnv *env,
 #endif
   }
 
-  auto recognizer = new sherpa_onnx::OnlineRecognizer(
+  return SafeJNI(
+      env, "OnlineRecognizer_newFromAsset",
+      [&] {
+        return reinterpret_cast<jlong>(new sherpa_onnx::OnlineRecognizer(
 #if __ANDROID_API__ >= 9
-      mgr,
+            mgr,
 #endif
-      config);
-
-  return (jlong)recognizer;
+            config));
+      },
+      jlong{0});
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -309,9 +312,13 @@ JNIEXPORT jlong JNICALL Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_newFromFile(
     return 0;
   }
 
-  auto recognizer = new sherpa_onnx::OnlineRecognizer(config);
-
-  return (jlong)recognizer;
+  return SafeJNI(
+      env, "OnlineRecognizer_newFromFile",
+      [&] {
+        return reinterpret_cast<jlong>(
+            new sherpa_onnx::OnlineRecognizer(config));
+      },
+      jlong{0});
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -332,10 +339,10 @@ JNIEXPORT void JNICALL Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_delete(
 
 SHERPA_ONNX_EXTERN_C
 JNIEXPORT void JNICALL Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_reset(
-    JNIEnv * /*env*/, jobject /*obj*/, jlong ptr, jlong stream_ptr) {
+    JNIEnv *env, jobject /*obj*/, jlong ptr, jlong stream_ptr) {
   auto recognizer = reinterpret_cast<sherpa_onnx::OnlineRecognizer *>(ptr);
   auto stream = reinterpret_cast<sherpa_onnx::OnlineStream *>(stream_ptr);
-  recognizer->Reset(stream);
+  SafeJNI(env, "OnlineRecognizer_reset", [&] { recognizer->Reset(stream); });
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -361,11 +368,12 @@ Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_isEndpoint(JNIEnv * /*env*/,
 
 SHERPA_ONNX_EXTERN_C
 JNIEXPORT void JNICALL Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_decode(
-    JNIEnv * /*env*/, jobject /*obj*/, jlong ptr, jlong stream_ptr) {
+    JNIEnv *env, jobject /*obj*/, jlong ptr, jlong stream_ptr) {
   auto recognizer = reinterpret_cast<sherpa_onnx::OnlineRecognizer *>(ptr);
   auto stream = reinterpret_cast<sherpa_onnx::OnlineStream *>(stream_ptr);
 
-  recognizer->DecodeStream(stream);
+  SafeJNI(env, "OnlineRecognizer_decode",
+          [&] { recognizer->DecodeStream(stream); });
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -395,11 +403,13 @@ Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_createStream(JNIEnv *env,
   const char *p = env->GetStringUTFChars(hotwords, nullptr);
   std::unique_ptr<sherpa_onnx::OnlineStream> stream;
 
-  if (strlen(p) == 0) {
-    stream = recognizer->CreateStream();
-  } else {
-    stream = recognizer->CreateStream(p);
-  }
+  SafeJNI(env, "OnlineRecognizer_createStream", [&] {
+    if (strlen(p) == 0) {
+      stream = recognizer->CreateStream();
+    } else {
+      stream = recognizer->CreateStream(p);
+    }
+  });
 
   env->ReleaseStringUTFChars(hotwords, p);
 
@@ -417,7 +427,12 @@ JNIEXPORT jobject JNICALL Java_com_k2fsa_sherpa_onnx_OnlineRecognizer_getResult(
   auto recognizer = reinterpret_cast<sherpa_onnx::OnlineRecognizer *>(ptr);
   auto stream = reinterpret_cast<sherpa_onnx::OnlineStream *>(stream_ptr);
 
-  sherpa_onnx::OnlineRecognizerResult result = recognizer->GetResult(stream);
+  sherpa_onnx::OnlineRecognizerResult result;
+  SafeJNI(env, "OnlineRecognizer_getResult",
+          [&] { result = recognizer->GetResult(stream); });
+  if (env->ExceptionCheck()) {
+    return nullptr;
+  }
 
   // Find the OnlineRecognizerResult class
   jclass cls = env->FindClass("com/k2fsa/sherpa/onnx/OnlineRecognizerResult");

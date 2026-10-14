@@ -9,6 +9,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -73,6 +74,22 @@ static int32_t GetNumThreads(int32_t num_threads) {
   }
 #endif
   return n;
+}
+
+// Returns what body returns. When body throws, logs the exception and returns
+// the value-initialised result: NULL for a pointer, 0 for a number. c-api.h
+// lists the functions that run through this.
+template <typename Body>
+static std::invoke_result_t<Body> ReturnFailureOnException(
+    const char *function_name, Body body) {
+  try {
+    return body();
+  } catch (const std::exception &e) {
+    SHERPA_ONNX_LOGE("%s: %s", function_name, e.what());
+  } catch (...) {
+    SHERPA_ONNX_LOGE("%s: unknown exception", function_name);
+  }
+  return {};
 }
 
 struct SherpaOnnxOnlineRecognizer {
@@ -216,12 +233,13 @@ const SherpaOnnxOnlineRecognizer *SherpaOnnxCreateOnlineRecognizer(
     return nullptr;
   }
 
-  SherpaOnnxOnlineRecognizer *recognizer = new SherpaOnnxOnlineRecognizer;
-
-  recognizer->impl =
-      std::make_unique<sherpa_onnx::OnlineRecognizer>(recognizer_config);
-
-  return recognizer;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxOnlineRecognizer * {
+        auto recognizer = std::make_unique<SherpaOnnxOnlineRecognizer>();
+        recognizer->impl =
+            std::make_unique<sherpa_onnx::OnlineRecognizer>(recognizer_config);
+        return recognizer.release();
+      });
 }
 
 void SherpaOnnxDestroyOnlineRecognizer(
@@ -233,17 +251,20 @@ void SherpaOnnxDestroyOnlineRecognizer(
 const SherpaOnnxOnlineStream *SherpaOnnxCreateOnlineStream(
     const SherpaOnnxOnlineRecognizer *recognizer) {
   if (!recognizer) return nullptr;
-  SherpaOnnxOnlineStream *stream =
-      new SherpaOnnxOnlineStream(recognizer->impl->CreateStream());
-  return stream;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxOnlineStream * {
+        return new SherpaOnnxOnlineStream(recognizer->impl->CreateStream());
+      });
 }
 
 const SherpaOnnxOnlineStream *SherpaOnnxCreateOnlineStreamWithHotwords(
     const SherpaOnnxOnlineRecognizer *recognizer, const char *hotwords) {
   if (!recognizer) return nullptr;
-  SherpaOnnxOnlineStream *stream =
-      new SherpaOnnxOnlineStream(recognizer->impl->CreateStream(hotwords));
-  return stream;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxOnlineStream * {
+        return new SherpaOnnxOnlineStream(
+            recognizer->impl->CreateStream(hotwords));
+      });
 }
 
 void SherpaOnnxDestroyOnlineStream(const SherpaOnnxOnlineStream *stream) {
@@ -251,11 +272,14 @@ void SherpaOnnxDestroyOnlineStream(const SherpaOnnxOnlineStream *stream) {
   delete stream;
 }
 
-void SherpaOnnxOnlineStreamAcceptWaveform(const SherpaOnnxOnlineStream *stream,
-                                          int32_t sample_rate,
-                                          const float *samples, int32_t n) {
-  if (!stream) return;
-  stream->impl->AcceptWaveform(sample_rate, samples, n);
+int32_t SherpaOnnxOnlineStreamAcceptWaveform(
+    const SherpaOnnxOnlineStream *stream, int32_t sample_rate,
+    const float *samples, int32_t n) {
+  if (!stream) return 0;
+  return ReturnFailureOnException(__func__, [&] {
+    stream->impl->AcceptWaveform(sample_rate, samples, n);
+    return int32_t{1};
+  });
 }
 
 int32_t SherpaOnnxIsOnlineStreamReady(
@@ -265,86 +289,98 @@ int32_t SherpaOnnxIsOnlineStreamReady(
   return recognizer->impl->IsReady(stream->impl.get());
 }
 
-void SherpaOnnxDecodeOnlineStream(const SherpaOnnxOnlineRecognizer *recognizer,
-                                  const SherpaOnnxOnlineStream *stream) {
-  if (!recognizer || !stream) return;
-  recognizer->impl->DecodeStream(stream->impl.get());
+int32_t SherpaOnnxDecodeOnlineStream(
+    const SherpaOnnxOnlineRecognizer *recognizer,
+    const SherpaOnnxOnlineStream *stream) {
+  if (!recognizer || !stream) return 0;
+  return ReturnFailureOnException(__func__, [&] {
+    recognizer->impl->DecodeStream(stream->impl.get());
+    return int32_t{1};
+  });
 }
 
-void SherpaOnnxDecodeMultipleOnlineStreams(
+int32_t SherpaOnnxDecodeMultipleOnlineStreams(
     const SherpaOnnxOnlineRecognizer *recognizer,
     const SherpaOnnxOnlineStream **streams, int32_t n) {
-  if (!recognizer || !streams) return;
-  std::vector<sherpa_onnx::OnlineStream *> ss(n);
-  for (int32_t i = 0; i != n; ++i) {
-    ss[i] = streams[i]->impl.get();
-  }
-  recognizer->impl->DecodeStreams(ss.data(), n);
+  if (!recognizer || !streams) return 0;
+  return ReturnFailureOnException(__func__, [&] {
+    std::vector<sherpa_onnx::OnlineStream *> ss(n);
+    for (int32_t i = 0; i != n; ++i) {
+      ss[i] = streams[i]->impl.get();
+    }
+    recognizer->impl->DecodeStreams(ss.data(), n);
+    return int32_t{1};
+  });
 }
 
 const SherpaOnnxOnlineRecognizerResult *SherpaOnnxGetOnlineStreamResult(
     const SherpaOnnxOnlineRecognizer *recognizer,
     const SherpaOnnxOnlineStream *stream) {
   if (!recognizer || !stream) return nullptr;
-  sherpa_onnx::OnlineRecognizerResult result =
-      recognizer->impl->GetResult(stream->impl.get());
-  const auto &text = result.text;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxOnlineRecognizerResult * {
+        sherpa_onnx::OnlineRecognizerResult result =
+            recognizer->impl->GetResult(stream->impl.get());
+        const auto &text = result.text;
 
-  auto r = new SherpaOnnxOnlineRecognizerResult;
-  memset(r, 0, sizeof(SherpaOnnxOnlineRecognizerResult));
+        auto r = new SherpaOnnxOnlineRecognizerResult;
+        memset(r, 0, sizeof(SherpaOnnxOnlineRecognizerResult));
 
-  // copy text
-  char *pText = new char[text.size() + 1];
-  std::copy(text.begin(), text.end(), pText);
-  pText[text.size()] = 0;
-  r->text = pText;
+        // copy text
+        char *pText = new char[text.size() + 1];
+        std::copy(text.begin(), text.end(), pText);
+        pText[text.size()] = 0;
+        r->text = pText;
 
-  // copy json
-  std::string json = result.AsJsonString();
-  char *pJson = new char[json.size() + 1];
-  std::copy(json.begin(), json.end(), pJson);
-  pJson[json.size()] = 0;
-  r->json = pJson;
+        // copy json
+        std::string json = result.AsJsonString();
+        char *pJson = new char[json.size() + 1];
+        std::copy(json.begin(), json.end(), pJson);
+        pJson[json.size()] = 0;
+        r->json = pJson;
 
-  // copy tokens
-  auto count = result.tokens.size();
-  if (count > 0) {
-    size_t total_length = 0;
-    for (const auto &token : result.tokens) {
-      // +1 for the null character at the end of each token
-      total_length += token.size() + 1;
-    }
+        // copy tokens
+        auto count = result.tokens.size();
+        if (count > 0) {
+          size_t total_length = 0;
+          for (const auto &token : result.tokens) {
+            // +1 for the null character at the end of each token
+            total_length += token.size() + 1;
+          }
 
-    r->count = count;
-    // Each word ends with nullptr
-    char *tokens = new char[total_length]{};
-    char **tokens_temp = new char *[r->count];
-    int32_t pos = 0;
-    for (int32_t i = 0; i < r->count; ++i) {
-      tokens_temp[i] = tokens + pos;
-      memcpy(tokens + pos, result.tokens[i].c_str(), result.tokens[i].size());
-      // +1 to move past the null character
-      pos += result.tokens[i].size() + 1;
-    }
-    r->tokens_arr = tokens_temp;
+          r->count = count;
+          // Each word ends with nullptr
+          char *tokens = new char[total_length]{};
+          char **tokens_temp = new char *[r->count];
+          int32_t pos = 0;
+          for (int32_t i = 0; i < r->count; ++i) {
+            tokens_temp[i] = tokens + pos;
+            memcpy(tokens + pos, result.tokens[i].c_str(),
+                   result.tokens[i].size());
+            // +1 to move past the null character
+            pos += result.tokens[i].size() + 1;
+          }
+          r->tokens_arr = tokens_temp;
 
-    if (!result.timestamps.empty() && result.timestamps.size() == r->count) {
-      r->timestamps = new float[r->count];
-      std::copy(result.timestamps.begin(), result.timestamps.end(),
-                r->timestamps);
-    } else {
-      r->timestamps = nullptr;
-    }
+          if (!result.timestamps.empty() &&
+              result.timestamps.size() == r->count) {
+            r->timestamps = new float[r->count];
+            std::copy(result.timestamps.begin(), result.timestamps.end(),
+                      r->timestamps);
+          } else {
+            r->timestamps = nullptr;
+          }
 
-    r->tokens = tokens;
-  } else {
-    r->count = 0;
-    r->timestamps = nullptr;
-    r->tokens = nullptr;
-    r->tokens_arr = nullptr;
-  }
+          r->tokens = tokens;
+        } else {
+          r->count = 0;
+          r->timestamps = nullptr;
+          r->tokens = nullptr;
+          r->tokens_arr = nullptr;
+        }
 
-  return r;
+        return r;
+      });
 }
 
 void SherpaOnnxDestroyOnlineRecognizerResult(
@@ -362,13 +398,15 @@ void SherpaOnnxDestroyOnlineRecognizerResult(
 const char *SherpaOnnxGetOnlineStreamResultAsJson(
     const SherpaOnnxOnlineRecognizer *recognizer,
     const SherpaOnnxOnlineStream *stream) {
-  sherpa_onnx::OnlineRecognizerResult result =
-      recognizer->impl->GetResult(stream->impl.get());
-  std::string json = result.AsJsonString();
-  char *pJson = new char[json.size() + 1];
-  std::copy(json.begin(), json.end(), pJson);
-  pJson[json.size()] = 0;
-  return pJson;
+  return ReturnFailureOnException(__func__, [&]() -> const char * {
+    sherpa_onnx::OnlineRecognizerResult result =
+        recognizer->impl->GetResult(stream->impl.get());
+    std::string json = result.AsJsonString();
+    char *pJson = new char[json.size() + 1];
+    std::copy(json.begin(), json.end(), pJson);
+    pJson[json.size()] = 0;
+    return pJson;
+  });
 }
 
 void SherpaOnnxDestroyOnlineStreamResultJson(const char *s) {
@@ -376,21 +414,32 @@ void SherpaOnnxDestroyOnlineStreamResultJson(const char *s) {
   delete[] s;
 }
 
-void SherpaOnnxOnlineStreamReset(const SherpaOnnxOnlineRecognizer *recognizer,
-                                 const SherpaOnnxOnlineStream *stream) {
-  if (!recognizer || !stream) return;
-  recognizer->impl->Reset(stream->impl.get());
+int32_t SherpaOnnxOnlineStreamReset(
+    const SherpaOnnxOnlineRecognizer *recognizer,
+    const SherpaOnnxOnlineStream *stream) {
+  if (!recognizer || !stream) return 0;
+  return ReturnFailureOnException(__func__, [&] {
+    recognizer->impl->Reset(stream->impl.get());
+    return int32_t{1};
+  });
 }
 
-void SherpaOnnxOnlineStreamInputFinished(const SherpaOnnxOnlineStream *stream) {
-  if (!stream) return;
-  stream->impl->InputFinished();
+int32_t SherpaOnnxOnlineStreamInputFinished(
+    const SherpaOnnxOnlineStream *stream) {
+  if (!stream) return 0;
+  return ReturnFailureOnException(__func__, [&] {
+    stream->impl->InputFinished();
+    return int32_t{1};
+  });
 }
 
-void SherpaOnnxOnlineStreamSetOption(const SherpaOnnxOnlineStream *stream,
-                                     const char *key, const char *value) {
-  if (!stream || !key || !value) return;
-  stream->impl->SetOption(key, value);
+int32_t SherpaOnnxOnlineStreamSetOption(const SherpaOnnxOnlineStream *stream,
+                                        const char *key, const char *value) {
+  if (!stream || !key || !value) return 0;
+  return ReturnFailureOnException(__func__, [&] {
+    stream->impl->SetOption(key, value);
+    return int32_t{1};
+  });
 }
 
 const char *SherpaOnnxOnlineStreamGetOption(
@@ -2259,11 +2308,12 @@ SherpaOnnxCreateSpeakerEmbeddingExtractor(
     return nullptr;
   }
 
-  auto p = new SherpaOnnxSpeakerEmbeddingExtractor;
-
-  p->impl = std::make_unique<sherpa_onnx::SpeakerEmbeddingExtractor>(c);
-
-  return p;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxSpeakerEmbeddingExtractor * {
+        auto p = std::make_unique<SherpaOnnxSpeakerEmbeddingExtractor>();
+        p->impl = std::make_unique<sherpa_onnx::SpeakerEmbeddingExtractor>(c);
+        return p.release();
+      });
 }
 
 void SherpaOnnxDestroySpeakerEmbeddingExtractor(
@@ -2279,9 +2329,10 @@ int32_t SherpaOnnxSpeakerEmbeddingExtractorDim(
 
 const SherpaOnnxOnlineStream *SherpaOnnxSpeakerEmbeddingExtractorCreateStream(
     const SherpaOnnxSpeakerEmbeddingExtractor *p) {
-  SherpaOnnxOnlineStream *stream =
-      new SherpaOnnxOnlineStream(p->impl->CreateStream());
-  return stream;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxOnlineStream * {
+        return new SherpaOnnxOnlineStream(p->impl->CreateStream());
+      });
 }
 
 int32_t SherpaOnnxSpeakerEmbeddingExtractorIsReady(
@@ -2293,10 +2344,12 @@ int32_t SherpaOnnxSpeakerEmbeddingExtractorIsReady(
 const float *SherpaOnnxSpeakerEmbeddingExtractorComputeEmbedding(
     const SherpaOnnxSpeakerEmbeddingExtractor *p,
     const SherpaOnnxOnlineStream *s) {
-  std::vector<float> v = p->impl->Compute(s->impl.get());
-  float *ans = new float[v.size()];
-  std::copy(v.begin(), v.end(), ans);
-  return ans;
+  return ReturnFailureOnException(__func__, [&]() -> const float * {
+    std::vector<float> v = p->impl->Compute(s->impl.get());
+    float *ans = new float[v.size()];
+    std::copy(v.begin(), v.end(), ans);
+    return ans;
+  });
 }
 
 void SherpaOnnxSpeakerEmbeddingExtractorDestroyEmbedding(const float *v) {
@@ -3465,12 +3518,13 @@ const SherpaOnnxOnlineRecognizer *SherpaOnnxCreateOnlineRecognizerOHOS(
   sherpa_onnx::OnlineRecognizerConfig recognizer_config =
       GetOnlineRecognizerConfig(config);
 
-  SherpaOnnxOnlineRecognizer *recognizer = new SherpaOnnxOnlineRecognizer;
-
-  recognizer->impl =
-      std::make_unique<sherpa_onnx::OnlineRecognizer>(mgr, recognizer_config);
-
-  return recognizer;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxOnlineRecognizer * {
+        auto recognizer = std::make_unique<SherpaOnnxOnlineRecognizer>();
+        recognizer->impl = std::make_unique<sherpa_onnx::OnlineRecognizer>(
+            mgr, recognizer_config);
+        return recognizer.release();
+      });
 }
 
 const SherpaOnnxOnlinePunctuation *SherpaOnnxCreateOnlinePunctuationOHOS(
@@ -3537,11 +3591,13 @@ SherpaOnnxCreateSpeakerEmbeddingExtractorOHOS(
 
   auto c = GetSpeakerEmbeddingExtractorConfig(config);
 
-  auto p = new SherpaOnnxSpeakerEmbeddingExtractor;
-
-  p->impl = std::make_unique<sherpa_onnx::SpeakerEmbeddingExtractor>(mgr, c);
-
-  return p;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxSpeakerEmbeddingExtractor * {
+        auto p = std::make_unique<SherpaOnnxSpeakerEmbeddingExtractor>();
+        p->impl =
+            std::make_unique<sherpa_onnx::SpeakerEmbeddingExtractor>(mgr, c);
+        return p.release();
+      });
 }
 
 const SherpaOnnxKeywordSpotter *SherpaOnnxCreateKeywordSpotterOHOS(
@@ -3767,10 +3823,13 @@ SherpaOnnxCreateStreamingSortformerDiarization(
     return nullptr;
   }
 
-  auto ans = new SherpaOnnxStreamingSortformerDiarization;
-  ans->impl =
-      std::make_unique<sherpa_onnx::StreamingSortformerDiarization>(c);
-  return ans;
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxStreamingSortformerDiarization * {
+        auto ans = std::make_unique<SherpaOnnxStreamingSortformerDiarization>();
+        ans->impl =
+            std::make_unique<sherpa_onnx::StreamingSortformerDiarization>(c);
+        return ans.release();
+      });
 }
 
 void SherpaOnnxDestroyStreamingSortformerDiarization(
@@ -3784,16 +3843,20 @@ int32_t SherpaOnnxStreamingSortformerDiarizationGetSampleRate(
   return sd->impl->SampleRate();
 }
 
-void SherpaOnnxStreamingSortformerDiarizationAcceptWaveform(
+int32_t SherpaOnnxStreamingSortformerDiarizationAcceptWaveform(
     const SherpaOnnxStreamingSortformerDiarization *sd, const float *samples,
     int32_t n) {
-  if (!sd || n <= 0) return;
+  if (!sd) return 0;
+  if (n <= 0) return 1;
   if (!samples) {
     SHERPA_ONNX_LOGE("samples is NULL with n=%d", n);
-    return;
+    return 0;
   }
-  const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)
-      ->impl->AcceptWaveform(samples, n);
+  return ReturnFailureOnException(__func__, [&] {
+    const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)
+        ->impl->AcceptWaveform(samples, n);
+    return int32_t{1};
+  });
 }
 
 float SherpaOnnxStreamingSortformerDiarizationProcessedSeconds(
@@ -3815,20 +3878,25 @@ SherpaOnnxStreamingSortformerDiarizationFinalize(
   *num_segments = 0;
   if (!sd) return nullptr;
 
-  const auto &segments =
-      const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)
-          ->impl->Finalize();
-  if (segments.empty()) return nullptr;
+  return ReturnFailureOnException(
+      __func__,
+      [&]() -> const SherpaOnnxStreamingSortformerDiarizationSegment * {
+        const auto &segments =
+            const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)
+                ->impl->Finalize();
 
-  auto *ans = new SherpaOnnxStreamingSortformerDiarizationSegment[segments
-                                                                     .size()];
-  for (size_t i = 0; i != segments.size(); ++i) {
-    ans[i].start = segments[i].start;
-    ans[i].end = segments[i].end;
-    ans[i].speaker = segments[i].speaker;
-  }
-  *num_segments = static_cast<int32_t>(segments.size());
-  return ans;
+        // A session without speech still returns an array, of length zero,
+        // so that NULL means only that the call failed.
+        const size_t n = segments.size();
+        auto *ans = new SherpaOnnxStreamingSortformerDiarizationSegment[n];
+        for (size_t i = 0; i != n; ++i) {
+          ans[i].start = segments[i].start;
+          ans[i].end = segments[i].end;
+          ans[i].speaker = segments[i].speaker;
+        }
+        *num_segments = static_cast<int32_t>(n);
+        return ans;
+      });
 }
 
 void SherpaOnnxStreamingSortformerDiarizationDestroySegments(
@@ -3836,10 +3904,13 @@ void SherpaOnnxStreamingSortformerDiarizationDestroySegments(
   delete[] segments;
 }
 
-void SherpaOnnxStreamingSortformerDiarizationReset(
+int32_t SherpaOnnxStreamingSortformerDiarizationReset(
     const SherpaOnnxStreamingSortformerDiarization *sd) {
-  if (!sd) return;
-  const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)->impl->Reset();
+  if (!sd) return 0;
+  return ReturnFailureOnException(__func__, [&] {
+    const_cast<SherpaOnnxStreamingSortformerDiarization *>(sd)->impl->Reset();
+    return int32_t{1};
+  });
 }
 
 const char *SherpaOnnxStreamingSortformerDiarizationModelSha256(

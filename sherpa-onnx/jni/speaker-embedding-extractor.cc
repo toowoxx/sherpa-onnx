@@ -53,13 +53,17 @@ Java_com_k2fsa_sherpa_onnx_SpeakerEmbeddingExtractor_newFromAsset(
 
   SHERPA_ONNX_LOGE("new config:\n%s", config.ToString().c_str());
 
-  auto extractor = new sherpa_onnx::SpeakerEmbeddingExtractor(
+  return SafeJNI(
+      env, "SpeakerEmbeddingExtractor_newFromAsset",
+      [&] {
+        return reinterpret_cast<jlong>(
+            new sherpa_onnx::SpeakerEmbeddingExtractor(
 #if __ANDROID_API__ >= 9
-      mgr,
+                mgr,
 #endif
-      config);
-
-  return (jlong)extractor;
+                config));
+      },
+      jlong{0});
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -82,9 +86,13 @@ Java_com_k2fsa_sherpa_onnx_SpeakerEmbeddingExtractor_newFromFile(
     return 0;
   }
 
-  auto extractor = new sherpa_onnx::SpeakerEmbeddingExtractor(config);
-
-  return (jlong)extractor;
+  return SafeJNI(
+      env, "SpeakerEmbeddingExtractor_newFromFile",
+      [&] {
+        return reinterpret_cast<jlong>(
+            new sherpa_onnx::SpeakerEmbeddingExtractor(config));
+      },
+      jlong{0});
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -98,10 +106,12 @@ Java_com_k2fsa_sherpa_onnx_SpeakerEmbeddingExtractor_delete(JNIEnv * /*env*/,
 SHERPA_ONNX_EXTERN_C
 JNIEXPORT jlong JNICALL
 Java_com_k2fsa_sherpa_onnx_SpeakerEmbeddingExtractor_createStream(
-    JNIEnv * /*env*/, jobject /*obj*/, jlong ptr) {
-  std::unique_ptr<sherpa_onnx::OnlineStream> s =
-      reinterpret_cast<sherpa_onnx::SpeakerEmbeddingExtractor *>(ptr)
-          ->CreateStream();
+    JNIEnv *env, jobject /*obj*/, jlong ptr) {
+  std::unique_ptr<sherpa_onnx::OnlineStream> s;
+  SafeJNI(env, "SpeakerEmbeddingExtractor_createStream", [&] {
+    s = reinterpret_cast<sherpa_onnx::SpeakerEmbeddingExtractor *>(ptr)
+            ->CreateStream();
+  });
 
   // The user is responsible to free the returned pointer.
   //
@@ -133,7 +143,13 @@ Java_com_k2fsa_sherpa_onnx_SpeakerEmbeddingExtractor_compute(JNIEnv *env,
       reinterpret_cast<sherpa_onnx::SpeakerEmbeddingExtractor *>(ptr);
   auto stream = reinterpret_cast<sherpa_onnx::OnlineStream *>(stream_ptr);
 
-  std::vector<float> embedding = extractor->Compute(stream);
+  std::vector<float> embedding;
+  SafeJNI(env, "SpeakerEmbeddingExtractor_compute",
+          [&] { embedding = extractor->Compute(stream); });
+  if (env->ExceptionCheck()) {
+    return nullptr;
+  }
+
   jfloatArray embedding_arr = env->NewFloatArray(embedding.size());
   env->SetFloatArrayRegion(embedding_arr, 0, embedding.size(),
                            embedding.data());

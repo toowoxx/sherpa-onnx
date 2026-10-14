@@ -74,8 +74,13 @@ Java_com_k2fsa_sherpa_onnx_StreamingSortformerDiarization_newFromFile(
     return 0;
   }
 
-  auto engine = new sherpa_onnx::StreamingSortformerDiarization(config);
-  return (jlong)engine;
+  return SafeJNI(
+      env, "StreamingSortformerDiarization_newFromFile",
+      [&] {
+        return reinterpret_cast<jlong>(
+            new sherpa_onnx::StreamingSortformerDiarization(config));
+      },
+      jlong{0});
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -96,12 +101,17 @@ Java_com_k2fsa_sherpa_onnx_StreamingSortformerDiarization_newFromAsset(
     return 0;
   }
 
-  auto engine = new sherpa_onnx::StreamingSortformerDiarization(
+  return SafeJNI(
+      env, "StreamingSortformerDiarization_newFromAsset",
+      [&] {
+        return reinterpret_cast<jlong>(
+            new sherpa_onnx::StreamingSortformerDiarization(
 #if __ANDROID_API__ >= 9
-      mgr,
+                mgr,
 #endif
-      config);
-  return (jlong)engine;
+                config));
+      },
+      jlong{0});
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -120,7 +130,8 @@ Java_com_k2fsa_sherpa_onnx_StreamingSortformerDiarization_acceptWaveform(
 
   jfloat *p = env->GetFloatArrayElements(samples, nullptr);
   jsize n = env->GetArrayLength(samples);
-  engine->AcceptWaveform(p, n);
+  SafeJNI(env, "StreamingSortformerDiarization_acceptWaveform",
+          [&] { engine->AcceptWaveform(p, n); });
   env->ReleaseFloatArrayElements(samples, p, JNI_ABORT);
 }
 
@@ -150,14 +161,19 @@ Java_com_k2fsa_sherpa_onnx_StreamingSortformerDiarization_finalizeSession(
     JNIEnv *env, jobject /*obj*/, jlong ptr) {
   auto engine =
       reinterpret_cast<sherpa_onnx::StreamingSortformerDiarization *>(ptr);
-  const auto &segments = engine->Finalize();
 
   std::vector<float> flat;
-  flat.reserve(segments.size() * 3);
-  for (const auto &s : segments) {
-    flat.push_back(static_cast<float>(s.speaker));
-    flat.push_back(s.start);
-    flat.push_back(s.end);
+  SafeJNI(env, "StreamingSortformerDiarization_finalizeSession", [&] {
+    const auto &segments = engine->Finalize();
+    flat.reserve(segments.size() * 3);
+    for (const auto &s : segments) {
+      flat.push_back(static_cast<float>(s.speaker));
+      flat.push_back(s.start);
+      flat.push_back(s.end);
+    }
+  });
+  if (env->ExceptionCheck()) {
+    return nullptr;
   }
 
   jfloatArray out = env->NewFloatArray(flat.size());

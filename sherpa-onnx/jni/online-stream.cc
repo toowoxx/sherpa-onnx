@@ -20,15 +20,16 @@ JNIEXPORT void JNICALL Java_com_k2fsa_sherpa_onnx_OnlineStream_acceptWaveform(
 
   jfloat *p = env->GetFloatArrayElements(samples, nullptr);
   jsize n = env->GetArrayLength(samples);
-  stream->AcceptWaveform(sample_rate, p, n);
+  SafeJNI(env, "OnlineStream_acceptWaveform",
+          [&] { stream->AcceptWaveform(sample_rate, p, n); });
   env->ReleaseFloatArrayElements(samples, p, JNI_ABORT);
 }
 
 SHERPA_ONNX_EXTERN_C
 JNIEXPORT void JNICALL Java_com_k2fsa_sherpa_onnx_OnlineStream_inputFinished(
-    JNIEnv * /*env*/, jobject /*obj*/, jlong ptr) {
+    JNIEnv *env, jobject /*obj*/, jlong ptr) {
   auto stream = reinterpret_cast<sherpa_onnx::OnlineStream *>(ptr);
-  stream->InputFinished();
+  SafeJNI(env, "OnlineStream_inputFinished", [&] { stream->InputFinished(); });
 }
 
 SHERPA_ONNX_EXTERN_C
@@ -37,7 +38,8 @@ JNIEXPORT void JNICALL Java_com_k2fsa_sherpa_onnx_OnlineStream_setOption(
   auto stream = reinterpret_cast<sherpa_onnx::OnlineStream *>(ptr);
   const char *p_key = env->GetStringUTFChars(key, nullptr);
   const char *p_value = env->GetStringUTFChars(value, nullptr);
-  stream->SetOption(p_key, p_value);
+  SafeJNI(env, "OnlineStream_setOption",
+          [&] { stream->SetOption(p_key, p_value); });
   env->ReleaseStringUTFChars(key, p_key);
   env->ReleaseStringUTFChars(value, p_value);
 }
