@@ -882,6 +882,16 @@ if(SHERPA_ONNX_ENABLE_TESTS)
     features-nemo-test.cc
   )
 
+  # The external backend of the streaming Sortformer engine (toowoxx), tested
+  # through the C API with a fake forward step. It needs the C API and the
+  # diarization switch the engine rides on.
+  set(sherpa_onnx_c_api_test_srcs)
+  if(SHERPA_ONNX_ENABLE_C_API AND SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION)
+    list(APPEND sherpa_onnx_c_api_test_srcs
+      sortformer-external-backend-test.cc
+    )
+  endif()
+
   function(sherpa_onnx_add_test source)
     get_filename_component(name ${source} NAME_WE)
     set(target_name ${name})
@@ -902,6 +912,12 @@ if(SHERPA_ONNX_ENABLE_TESTS)
 
   foreach(source IN LISTS sherpa_onnx_test_srcs)
     sherpa_onnx_add_test(${source})
+  endforeach()
+
+  foreach(source IN LISTS sherpa_onnx_c_api_test_srcs)
+    sherpa_onnx_add_test(${source})
+    get_filename_component(name ${source} NAME_WE)
+    target_link_libraries(${name} PRIVATE sherpa-onnx-c-api)
   endforeach()
 endif()
 
