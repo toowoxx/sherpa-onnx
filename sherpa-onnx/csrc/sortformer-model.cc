@@ -16,6 +16,7 @@
 #include <mutex>  // NOLINT
 #include <string>
 #include <thread>  // NOLINT
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -236,7 +237,23 @@ void JoinWorkerThread(const OrtCustomHandleType *handle_ptr) {
 
 class SortformerModel::Impl {
  public:
-  explicit Impl(const SortformerDiarizationConfig &config)
+  virtual ~Impl() = default;
+
+  virtual SortformerModelOutput Forward(
+      const float *features, int32_t n_feat_frames,
+      const std::vector<float> &spkcache, int32_t spkcache_lengths,
+      const std::vector<float> &fifo, int32_t fifo_lengths) const = 0;
+
+  virtual const std::string &ModelSha256() const = 0;
+
+  virtual const std::vector<int32_t> &WorkerThreadIds() const = 0;
+};
+
+namespace {
+
+class OnnxImpl : public SortformerModel::Impl {
+ public:
+  explicit OnnxImpl(const SortformerDiarizationConfig &config)
       : config_(config),
         env_(ORT_LOGGING_LEVEL_ERROR),
         sess_opts_(GetSessionOptionsImpl(config.num_threads, config.provider)),
@@ -249,7 +266,7 @@ class SortformerModel::Impl {
   }
 
   template <typename Manager>
-  Impl(Manager *mgr, const SortformerDiarizationConfig &config)
+  OnnxImpl(Manager *mgr, const SortformerDiarizationConfig &config)
       : config_(config),
         env_(ORT_LOGGING_LEVEL_ERROR),
         sess_opts_(GetSessionOptionsImpl(config.num_threads, config.provider)),
@@ -267,7 +284,7 @@ class SortformerModel::Impl {
                                 const std::vector<float> &spkcache,
                                 int32_t spkcache_lengths,
                                 const std::vector<float> &fifo,
-                                int32_t fifo_lengths) const {
+                                int32_t fifo_lengths) const override {
     const auto &s = config_.streaming;
     auto memory_info =
         Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
@@ -353,9 +370,9 @@ class SortformerModel::Impl {
     return result;
   }
 
-  const std::string &ModelSha256() const { return model_sha256_; }
+  const std::string &ModelSha256() const override { return model_sha256_; }
 
-  const std::vector<int32_t> &WorkerThreadIds() const {
+  const std::vector<int32_t> &WorkerThreadIds() const override {
     std::lock_guard<std::mutex> lock(thread_registry_->mutex);
     cached_tids_ = thread_registry_->tids;
     return cached_tids_;
@@ -430,13 +447,101 @@ class SortformerModel::Impl {
   mutable std::vector<int32_t> cached_tids_;
 };
 
+// The forward step done by the platform. Allocates the result buffers for the
+// largest output the geometry can produce and trims them to what the callee
+// reports.
+class ExternalImpl : public SortformerModel::Impl {
+ public:
+  ExternalImpl(const SortformerDiarizationConfig &config,
+               SortformerExternalBackend backend)
+      : config_(config), backend_(std::move(backend)) {
+    if (backend_.forward == nullptr) {
+      SHERPA_ONNX_LOGE("sortformer: the external backend has no forward step");
+      SHERPA_ONNX_EXIT(-1);
+    }
+  }
+
+  ~ExternalImpl() override {
+    if (backend_.destroy != nullptr) {
+      backend_.destroy(backend_.user_data);
+    }
+  }
+
+  SortformerModelOutput Forward(const float *features, int32_t n_feat_frames,
+                                const std::vector<float> &spkcache,
+                                int32_t spkcache_lengths,
+                                const std::vector<float> &fifo,
+                                int32_t fifo_lengths) const override {
+    const auto &s = config_.streaming;
+
+    SortformerForwardRequest request;
+    request.features = features;
+    request.n_feat_frames = n_feat_frames;
+    request.spkcache = spkcache.data();
+    request.spkcache_capacity = s.spkcache_len;
+    request.spkcache_length = spkcache_lengths;
+    request.fifo = fifo.data();
+    request.fifo_capacity = s.fifo_len;
+    request.fifo_length = fifo_lengths;
+
+    const int32_t max_chunk_enc =
+        (n_feat_frames + s.subsampling_factor - 1) / s.subsampling_factor;
+    SortformerModelOutput output;
+    output.preds.resize(static_cast<size_t>(s.spkcache_len + s.fifo_len +
+                                            max_chunk_enc) *
+                        s.n_spk);
+    output.chunk_pre_encode_embs.resize(static_cast<size_t>(max_chunk_enc) *
+                                        s.emb_dim);
+
+    SortformerForwardResult result;
+    result.preds = output.preds.data();
+    result.preds_capacity = s.spkcache_len + s.fifo_len + max_chunk_enc;
+    result.chunk_pre_encode_embs = output.chunk_pre_encode_embs.data();
+    result.embs_capacity = max_chunk_enc;
+
+    if (!backend_.forward(backend_.user_data, &request, &result)) {
+      throw std::runtime_error("the external Sortformer backend failed");
+    }
+    if (result.n_packed < 0 || result.n_packed > result.preds_capacity ||
+        result.n_chunk_enc < 0 || result.n_chunk_enc > result.embs_capacity) {
+      throw std::runtime_error(
+          "the external Sortformer backend reported an impossible size");
+    }
+
+    output.n_packed = result.n_packed;
+    output.preds.resize(static_cast<size_t>(result.n_packed) * s.n_spk);
+    output.n_chunk_enc = result.n_chunk_enc;
+    output.chunk_pre_encode_embs.resize(static_cast<size_t>(result.n_chunk_enc) *
+                                        s.emb_dim);
+    output.chunk_pre_encode_length = result.chunk_pre_encode_length;
+    return output;
+  }
+
+  const std::string &ModelSha256() const override { return backend_.model_id; }
+
+  const std::vector<int32_t> &WorkerThreadIds() const override {
+    return no_threads_;
+  }
+
+ private:
+  SortformerDiarizationConfig config_;
+  SortformerExternalBackend backend_;
+  std::vector<int32_t> no_threads_;
+};
+
+}  // namespace
+
 SortformerModel::SortformerModel(const SortformerDiarizationConfig &config)
-    : impl_(std::make_unique<Impl>(config)) {}
+    : impl_(std::make_unique<OnnxImpl>(config)) {}
+
+SortformerModel::SortformerModel(const SortformerDiarizationConfig &config,
+                                 SortformerExternalBackend backend)
+    : impl_(std::make_unique<ExternalImpl>(config, std::move(backend))) {}
 
 template <typename Manager>
 SortformerModel::SortformerModel(Manager *mgr,
                                  const SortformerDiarizationConfig &config)
-    : impl_(std::make_unique<Impl>(mgr, config)) {}
+    : impl_(std::make_unique<OnnxImpl>(mgr, config)) {}
 
 SortformerModel::~SortformerModel() = default;
 

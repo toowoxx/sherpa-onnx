@@ -49,7 +49,17 @@
 //    (`Mulspkcache_fifo_chunk_preds_dim_0`), which is a strong hint that the
 //    ordering is an export artifact rather than a contract.
 //
-// Only the CPU execution provider is supported.
+// Only the CPU execution provider is supported by the ONNX Runtime backend.
+//
+// External backend
+//
+// A platform with a faster runtime for the same graph than ONNX Runtime on the
+// CPU (CoreML on Apple devices, which can use the GPU and the Neural Engine)
+// supplies the forward step as a function through SortformerExternalBackend.
+// The step is the same pure function: this library keeps the frontend, the
+// AOSC and the post-processing, so the only thing the platform replaces is the
+// neural network. A fixed-shape network is served by padding on the callee's
+// side with the lengths this class passes.
 
 #ifndef SHERPA_ONNX_CSRC_SORTFORMER_MODEL_H_
 #define SHERPA_ONNX_CSRC_SORTFORMER_MODEL_H_
@@ -75,9 +85,52 @@ struct SortformerModelOutput {
   int32_t chunk_pre_encode_length = 0;
 };
 
+// What one call of the external forward step is given. The state tensors are
+// at full capacity with zero padding behind their valid lengths, as for the
+// ONNX Runtime backend.
+struct SortformerForwardRequest {
+  const float *features = nullptr;  // (n_feat_frames, feat_dim)
+  int32_t n_feat_frames = 0;
+  const float *spkcache = nullptr;  // (spkcache_capacity, emb_dim)
+  int32_t spkcache_capacity = 0;
+  int32_t spkcache_length = 0;
+  const float *fifo = nullptr;  // (fifo_capacity, emb_dim)
+  int32_t fifo_capacity = 0;
+  int32_t fifo_length = 0;
+};
+
+// Buffers the external forward step writes into. The caller sizes them for the
+// largest result the geometry allows and the callee sets the counts.
+struct SortformerForwardResult {
+  float *preds = nullptr;  // (preds_capacity, n_spk)
+  int32_t preds_capacity = 0;
+  int32_t n_packed = 0;
+  float *chunk_pre_encode_embs = nullptr;  // (embs_capacity, emb_dim)
+  int32_t embs_capacity = 0;
+  int32_t n_chunk_enc = 0;
+  int32_t chunk_pre_encode_length = 0;
+};
+
+// Returns true on success.
+using SortformerExternalForwardFn = bool (*)(void *user_data,
+                                             const SortformerForwardRequest *,
+                                             SortformerForwardResult *);
+
+struct SortformerExternalBackend {
+  void *user_data = nullptr;
+  SortformerExternalForwardFn forward = nullptr;
+  // Called once when the model is destroyed. May be null.
+  void (*destroy)(void *user_data) = nullptr;
+  // Identity of the artifact the backend runs, reported as the model SHA.
+  std::string model_id;
+};
+
 class SortformerModel {
  public:
   explicit SortformerModel(const SortformerDiarizationConfig &config);
+
+  SortformerModel(const SortformerDiarizationConfig &config,
+                  SortformerExternalBackend backend);
 
   template <typename Manager>
   SortformerModel(Manager *mgr, const SortformerDiarizationConfig &config);
@@ -107,8 +160,11 @@ class SortformerModel {
   // them.
   const std::vector<int32_t> &WorkerThreadIds() const;
 
- private:
+ public:
+  // The backends derive from this; it is not part of the interface.
   class Impl;
+
+ private:
   std::unique_ptr<Impl> impl_;
 };
 

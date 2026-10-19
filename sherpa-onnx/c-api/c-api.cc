@@ -3797,6 +3797,24 @@ struct SherpaOnnxStreamingSortformerDiarization {
   std::unique_ptr<sherpa_onnx::StreamingSortformerDiarization> impl;
 };
 
+namespace {
+
+// Zero keeps the default of the field, as for every other C-api config.
+void ApplyStreamingGeometry(
+    const SherpaOnnxStreamingSortformerDiarizationConfig &config,
+    sherpa_onnx::SortformerStreamingConfig *streaming) {
+  if (config.chunk_len > 0) streaming->chunk_len = config.chunk_len;
+  if (config.chunk_right_context > 0) {
+    streaming->chunk_right_context = config.chunk_right_context;
+  }
+  if (config.fifo_len > 0) streaming->fifo_len = config.fifo_len;
+  if (config.spkcache_update_period > 0) {
+    streaming->spkcache_update_period = config.spkcache_update_period;
+  }
+}
+
+}  // namespace
+
 const SherpaOnnxStreamingSortformerDiarization *
 SherpaOnnxCreateStreamingSortformerDiarization(
     const SherpaOnnxStreamingSortformerDiarizationConfig *config) {
@@ -3817,6 +3835,7 @@ SherpaOnnxCreateStreamingSortformerDiarization(
   if (config->provider) {
     c.provider = config->provider;
   }
+  ApplyStreamingGeometry(*config, &c.streaming);
 
   if (!c.Validate()) {
     SHERPA_ONNX_LOGE("Errors in Sortformer diarization config");
@@ -3830,6 +3849,88 @@ SherpaOnnxCreateStreamingSortformerDiarization(
             std::make_unique<sherpa_onnx::StreamingSortformerDiarization>(c);
         return ans.release();
       });
+}
+
+const SherpaOnnxStreamingSortformerDiarization *
+SherpaOnnxCreateStreamingSortformerDiarizationWithBackend(
+    const SherpaOnnxStreamingSortformerDiarizationConfig *config,
+    const SherpaOnnxSortformerExternalBackend *backend) {
+  if (!config || !backend || !backend->forward) {
+    SHERPA_ONNX_LOGE("a config and a forward step are required");
+    return nullptr;
+  }
+
+  sherpa_onnx::SortformerDiarizationConfig c;
+  c.debug = config->debug != 0;
+  ApplyStreamingGeometry(*config, &c.streaming);
+  // Not c.Validate(): it requires an ONNX model file this session does not read.
+  if (!c.streaming.Validate() || !c.frontend.Validate() ||
+      !c.post_processing.Validate()) {
+    SHERPA_ONNX_LOGE("Errors in Sortformer diarization config");
+    return nullptr;
+  }
+
+  sherpa_onnx::SortformerExternalBackend external;
+  external.user_data = backend->user_data;
+  external.destroy = backend->destroy;
+  external.model_id = backend->model_id ? backend->model_id : "";
+  const auto forward = backend->forward;
+  // A capture-less trampoline cannot carry the C function pointer, so the
+  // pointer travels in the user data next to the caller's own.
+  struct Trampoline {
+    decltype(forward) forward;
+    void *user_data;
+    void (*destroy)(void *);
+  };
+  auto *trampoline = new Trampoline{forward, backend->user_data, backend->destroy};
+  external.user_data = trampoline;
+  external.forward = [](void *data,
+                        const sherpa_onnx::SortformerForwardRequest *request,
+                        sherpa_onnx::SortformerForwardResult *result) -> bool {
+    auto *t = static_cast<Trampoline *>(data);
+    SherpaOnnxSortformerForwardRequest in;
+    in.features = request->features;
+    in.n_feat_frames = request->n_feat_frames;
+    in.spkcache = request->spkcache;
+    in.spkcache_capacity = request->spkcache_capacity;
+    in.spkcache_length = request->spkcache_length;
+    in.fifo = request->fifo;
+    in.fifo_capacity = request->fifo_capacity;
+    in.fifo_length = request->fifo_length;
+    SherpaOnnxSortformerForwardResult out;
+    out.preds = result->preds;
+    out.preds_capacity = result->preds_capacity;
+    out.n_packed = 0;
+    out.chunk_pre_encode_embs = result->chunk_pre_encode_embs;
+    out.embs_capacity = result->embs_capacity;
+    out.n_chunk_enc = 0;
+    out.chunk_pre_encode_length = 0;
+    if (t->forward(t->user_data, &in, &out) != 1) return false;
+    result->n_packed = out.n_packed;
+    result->n_chunk_enc = out.n_chunk_enc;
+    result->chunk_pre_encode_length = out.chunk_pre_encode_length;
+    return true;
+  };
+  external.destroy = [](void *data) {
+    auto *t = static_cast<Trampoline *>(data);
+    if (t->destroy) t->destroy(t->user_data);
+    delete t;
+  };
+
+  const SherpaOnnxStreamingSortformerDiarization *session =
+      ReturnFailureOnException(
+          __func__, [&]() -> const SherpaOnnxStreamingSortformerDiarization * {
+            auto ans =
+                std::make_unique<SherpaOnnxStreamingSortformerDiarization>();
+            ans->impl =
+                std::make_unique<sherpa_onnx::StreamingSortformerDiarization>(
+                    c, std::move(external));
+            return ans.release();
+          });
+  if (session == nullptr) {
+    delete trampoline;
+  }
+  return session;
 }
 
 void SherpaOnnxDestroyStreamingSortformerDiarization(

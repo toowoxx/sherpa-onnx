@@ -4753,7 +4753,70 @@ typedef struct SherpaOnnxStreamingSortformerDiarizationConfig {
   int32_t debug;
   /** Execution provider, e.g. "cpu". NULL selects "cpu". */
   const char *provider;
+  /**
+   * Streaming geometry. Zero keeps the default of the 10.0 s latency
+   * configuration (124 / 1 / 1 / 124 / 144). A value is taken as given, so a
+   * caller that sets one of these sets the ones the configuration changes
+   * together: the 30.4 s latency configuration is chunk_len 340,
+   * chunk_right_context 40, fifo_len 40 and spkcache_update_period 300.
+   */
+  int32_t chunk_len;
+  int32_t chunk_right_context;
+  int32_t fifo_len;
+  int32_t spkcache_update_period;
 } SherpaOnnxStreamingSortformerDiarizationConfig;
+
+/**
+ * @brief What one call of an external forward step is given.
+ *
+ * The state tensors are at full capacity with zero padding behind their valid
+ * lengths. The features are (n_feat_frames, 128) row-major log-mel, the cache
+ * and the FIFO (capacity, 512).
+ */
+typedef struct SherpaOnnxSortformerForwardRequest {
+  const float *features;
+  int32_t n_feat_frames;
+  const float *spkcache;
+  int32_t spkcache_capacity;
+  int32_t spkcache_length;
+  const float *fifo;
+  int32_t fifo_capacity;
+  int32_t fifo_length;
+} SherpaOnnxSortformerForwardRequest;
+
+/**
+ * @brief Buffers an external forward step writes its result into.
+ *
+ * `preds` is (preds_capacity, 4) and `chunk_pre_encode_embs` is
+ * (embs_capacity, 512), both row-major. The step sets the three counts: the
+ * valid rows of each buffer and the valid encoder frames of the chunk.
+ */
+typedef struct SherpaOnnxSortformerForwardResult {
+  float *preds;
+  int32_t preds_capacity;
+  int32_t n_packed;
+  float *chunk_pre_encode_embs;
+  int32_t embs_capacity;
+  int32_t n_chunk_enc;
+  int32_t chunk_pre_encode_length;
+} SherpaOnnxSortformerForwardResult;
+
+/**
+ * @brief The network of Sortformer run by the caller instead of ONNX Runtime.
+ *
+ * `forward` is the pure function of the exported graph (see
+ * sortformer-model.h) and returns 1 on success. `destroy` is called once with
+ * `user_data` when the session is destroyed and may be NULL. `model_id` names
+ * the artifact that runs and is reported where the SHA-256 of an ONNX model is.
+ */
+typedef struct SherpaOnnxSortformerExternalBackend {
+  void *user_data;
+  int32_t (*forward)(void *user_data,
+                     const SherpaOnnxSortformerForwardRequest *request,
+                     SherpaOnnxSortformerForwardResult *result);
+  void (*destroy)(void *user_data);
+  const char *model_id;
+} SherpaOnnxSortformerExternalBackend;
 
 SHERPA_ONNX_API typedef struct SherpaOnnxStreamingSortformerDiarization
     SherpaOnnxStreamingSortformerDiarization;
@@ -4781,6 +4844,19 @@ typedef struct SherpaOnnxStreamingSortformerDiarizationSegment {
 SHERPA_ONNX_API const SherpaOnnxStreamingSortformerDiarization *
 SherpaOnnxCreateStreamingSortformerDiarization(
     const SherpaOnnxStreamingSortformerDiarizationConfig *config);
+
+/**
+ * @brief Create a session whose network is run by `backend`.
+ *
+ * The frontend, the arrival-order speaker cache and the post-processing are
+ * the ones of the ONNX Runtime session. config->model and config->provider are
+ * ignored. On success the session owns `backend` and calls its `destroy`; on
+ * failure (NULL) `destroy` is not called and the caller keeps `user_data`.
+ */
+SHERPA_ONNX_API const SherpaOnnxStreamingSortformerDiarization *
+SherpaOnnxCreateStreamingSortformerDiarizationWithBackend(
+    const SherpaOnnxStreamingSortformerDiarizationConfig *config,
+    const SherpaOnnxSortformerExternalBackend *backend);
 
 /**
  * @brief Destroy a session created by

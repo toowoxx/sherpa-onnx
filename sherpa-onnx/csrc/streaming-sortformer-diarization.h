@@ -53,6 +53,7 @@
 #include <vector>
 
 #include "sherpa-onnx/csrc/sortformer-diarization-config.h"
+#include "sherpa-onnx/csrc/sortformer-model.h"
 #include "sherpa-onnx/csrc/sortformer-post-processing.h"
 
 namespace sherpa_onnx {
@@ -61,6 +62,11 @@ class StreamingSortformerDiarization {
  public:
   explicit StreamingSortformerDiarization(
       const SortformerDiarizationConfig &config);
+
+  // Runs the network through a platform backend instead of ONNX Runtime. The
+  // frontend, the AOSC and the post-processing are the same.
+  StreamingSortformerDiarization(const SortformerDiarizationConfig &config,
+                                 SortformerExternalBackend backend);
 
   template <typename Manager>
   StreamingSortformerDiarization(Manager *mgr,

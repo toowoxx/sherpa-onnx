@@ -41,6 +41,16 @@ class StreamingSortformerDiarization::Impl {
     Reset();
   }
 
+  Impl(const SortformerDiarizationConfig &config,
+       SortformerExternalBackend backend)
+      : config_(config),
+        frontend_(config.frontend),
+        model_(std::make_unique<SortformerModel>(config, std::move(backend))),
+        aosc_(config.streaming),
+        preemph_buffer_(config.frontend) {
+    Reset();
+  }
+
   template <typename Manager>
   Impl(Manager *mgr, const SortformerDiarizationConfig &config)
       : config_(config),
@@ -270,6 +280,10 @@ class StreamingSortformerDiarization::Impl {
 StreamingSortformerDiarization::StreamingSortformerDiarization(
     const SortformerDiarizationConfig &config)
     : impl_(std::make_unique<Impl>(config)) {}
+
+StreamingSortformerDiarization::StreamingSortformerDiarization(
+    const SortformerDiarizationConfig &config, SortformerExternalBackend backend)
+    : impl_(std::make_unique<Impl>(config, std::move(backend))) {}
 
 template <typename Manager>
 StreamingSortformerDiarization::StreamingSortformerDiarization(
