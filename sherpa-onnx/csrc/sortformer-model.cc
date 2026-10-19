@@ -455,15 +455,9 @@ class ExternalImpl : public SortformerModel::Impl {
   ExternalImpl(const SortformerDiarizationConfig &config,
                SortformerExternalBackend backend)
       : config_(config), backend_(std::move(backend)) {
-    if (backend_.forward == nullptr) {
+    if (!backend_.forward) {
       SHERPA_ONNX_LOGE("sortformer: the external backend has no forward step");
       SHERPA_ONNX_EXIT(-1);
-    }
-  }
-
-  ~ExternalImpl() override {
-    if (backend_.destroy != nullptr) {
-      backend_.destroy(backend_.user_data);
     }
   }
 
@@ -499,7 +493,7 @@ class ExternalImpl : public SortformerModel::Impl {
     result.chunk_pre_encode_embs = output.chunk_pre_encode_embs.data();
     result.embs_capacity = max_chunk_enc;
 
-    if (!backend_.forward(backend_.user_data, &request, &result)) {
+    if (!backend_.forward(request, &result)) {
       throw std::runtime_error("the external Sortformer backend failed");
     }
     if (result.n_packed < 0 || result.n_packed > result.preds_capacity ||

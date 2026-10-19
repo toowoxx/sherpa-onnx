@@ -56,15 +56,20 @@
 // A platform with a faster runtime for the same graph than ONNX Runtime on the
 // CPU (CoreML on Apple devices, which can use the GPU and the Neural Engine)
 // supplies the forward step as a function through SortformerExternalBackend.
-// The step is the same pure function: this library keeps the frontend, the
-// AOSC and the post-processing, so the only thing the platform replaces is the
+// The step is the same pure function: the frontend, the AOSC and the
+// post-processing stay in this library, so the platform replaces only the
 // neural network. A fixed-shape network is served by padding on the callee's
 // side with the lengths this class passes.
+//
+// The backend is a std::function, so whatever it captures lives exactly as
+// long as the model. Releasing what a C caller handed over is the C API's job
+// (see SherpaOnnxSortformerExternalBackend), not this class's.
 
 #ifndef SHERPA_ONNX_CSRC_SORTFORMER_MODEL_H_
 #define SHERPA_ONNX_CSRC_SORTFORMER_MODEL_H_
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -111,16 +116,12 @@ struct SortformerForwardResult {
   int32_t chunk_pre_encode_length = 0;
 };
 
-// Returns true on success.
-using SortformerExternalForwardFn = bool (*)(void *user_data,
-                                             const SortformerForwardRequest *,
-                                             SortformerForwardResult *);
+// One forward step of an external backend. Returns true on success.
+using SortformerForwardFn = std::function<bool(
+    const SortformerForwardRequest &request, SortformerForwardResult *result)>;
 
 struct SortformerExternalBackend {
-  void *user_data = nullptr;
-  SortformerExternalForwardFn forward = nullptr;
-  // Called once when the model is destroyed. May be null.
-  void (*destroy)(void *user_data) = nullptr;
+  SortformerForwardFn forward;
   // Identity of the artifact the backend runs, reported as the model SHA.
   std::string model_id;
 };
