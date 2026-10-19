@@ -187,6 +187,10 @@ bool SortformerDiarizationConfig::Validate() const {
     return false;
   }
 
+  return ValidateForExternalBackend();
+}
+
+bool SortformerDiarizationConfig::ValidateForExternalBackend() const {
   return streaming.Validate() && frontend.Validate() &&
          post_processing.Validate();
 }

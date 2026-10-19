@@ -53,10 +53,11 @@
 #include <vector>
 
 #include "sherpa-onnx/csrc/sortformer-diarization-config.h"
-#include "sherpa-onnx/csrc/sortformer-model.h"
 #include "sherpa-onnx/csrc/sortformer-post-processing.h"
 
 namespace sherpa_onnx {
+
+struct SortformerExternalBackend;  // sortformer-model.h
 
 class StreamingSortformerDiarization {
  public:
@@ -113,8 +114,10 @@ class StreamingSortformerDiarization {
 
   void Reset();
 
-  // SHA-256 of the model file, lowercase hex — proof of WHICH artifact ran.
-  const std::string &ModelSha256() const;
+  // Identity of the network that runs, proof of WHICH artifact ran: the
+  // SHA-256 of the model file, lowercase hex, for ONNX Runtime, and the
+  // model_id of an external backend. See SortformerModel::ModelId().
+  const std::string &ModelId() const;
 
   // ONNX Runtime intra-op worker thread ids, so a caller can hand the threads
   // that run inference to a platform scheduling API. Populated once the

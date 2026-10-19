@@ -151,6 +151,9 @@ struct SortformerDiarizationConfig {
 
   void Register(ParseOptions *po);
   bool Validate() const;
+  // Validate() without what only the ONNX Runtime backend reads, the model
+  // file and the thread count, for a session whose network runs elsewhere.
+  bool ValidateForExternalBackend() const;
   std::string ToString() const;
 };
 

@@ -14,9 +14,9 @@
 #include <cstring>
 #include <memory>
 #include <mutex>  // NOLINT
+#include <stdexcept>
 #include <string>
 #include <thread>  // NOLINT
-#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -235,23 +235,23 @@ void JoinWorkerThread(const OrtCustomHandleType *handle_ptr) {
 
 }  // namespace
 
-class SortformerModel::Impl {
+class SortformerForward {
  public:
-  virtual ~Impl() = default;
+  virtual ~SortformerForward() = default;
 
   virtual SortformerModelOutput Forward(
       const float *features, int32_t n_feat_frames,
       const std::vector<float> &spkcache, int32_t spkcache_lengths,
       const std::vector<float> &fifo, int32_t fifo_lengths) const = 0;
 
-  virtual const std::string &ModelSha256() const = 0;
+  virtual const std::string &ModelId() const = 0;
 
   virtual const std::vector<int32_t> &WorkerThreadIds() const = 0;
 };
 
 namespace {
 
-class OnnxImpl : public SortformerModel::Impl {
+class OnnxImpl : public SortformerForward {
  public:
   explicit OnnxImpl(const SortformerDiarizationConfig &config)
       : config_(config),
@@ -370,7 +370,7 @@ class OnnxImpl : public SortformerModel::Impl {
     return result;
   }
 
-  const std::string &ModelSha256() const override { return model_sha256_; }
+  const std::string &ModelId() const override { return model_sha256_; }
 
   const std::vector<int32_t> &WorkerThreadIds() const override {
     std::lock_guard<std::mutex> lock(thread_registry_->mutex);
@@ -450,16 +450,11 @@ class OnnxImpl : public SortformerModel::Impl {
 // The forward step done by the platform. Allocates the result buffers for the
 // largest output the geometry can produce and trims them to what the callee
 // reports.
-class ExternalImpl : public SortformerModel::Impl {
+class ExternalImpl : public SortformerForward {
  public:
   ExternalImpl(const SortformerDiarizationConfig &config,
                SortformerExternalBackend backend)
-      : config_(config), backend_(std::move(backend)) {
-    if (!backend_.forward) {
-      SHERPA_ONNX_LOGE("sortformer: the external backend has no forward step");
-      SHERPA_ONNX_EXIT(-1);
-    }
-  }
+      : config_(config), backend_(std::move(backend)) {}
 
   SortformerModelOutput Forward(const float *features, int32_t n_feat_frames,
                                 const std::vector<float> &spkcache,
@@ -505,13 +500,13 @@ class ExternalImpl : public SortformerModel::Impl {
     output.n_packed = result.n_packed;
     output.preds.resize(static_cast<size_t>(result.n_packed) * s.n_spk);
     output.n_chunk_enc = result.n_chunk_enc;
-    output.chunk_pre_encode_embs.resize(static_cast<size_t>(result.n_chunk_enc) *
-                                        s.emb_dim);
+    output.chunk_pre_encode_embs.resize(
+        static_cast<size_t>(result.n_chunk_enc) * s.emb_dim);
     output.chunk_pre_encode_length = result.chunk_pre_encode_length;
     return output;
   }
 
-  const std::string &ModelSha256() const override { return backend_.model_id; }
+  const std::string &ModelId() const override { return backend_.model_id; }
 
   const std::vector<int32_t> &WorkerThreadIds() const override {
     return no_threads_;
@@ -547,8 +542,8 @@ SortformerModelOutput SortformerModel::Forward(
                         fifo, fifo_lengths);
 }
 
-const std::string &SortformerModel::ModelSha256() const {
-  return impl_->ModelSha256();
+const std::string &SortformerModel::ModelId() const {
+  return impl_->ModelId();
 }
 
 const std::vector<int32_t> &SortformerModel::WorkerThreadIds() const {

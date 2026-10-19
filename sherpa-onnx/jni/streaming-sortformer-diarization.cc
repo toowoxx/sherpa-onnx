@@ -212,7 +212,8 @@ Java_com_k2fsa_sherpa_onnx_StreamingSortformerDiarization_modelSha256(
     JNIEnv *env, jobject /*obj*/, jlong ptr) {
   auto engine =
       reinterpret_cast<sherpa_onnx::StreamingSortformerDiarization *>(ptr);
-  return env->NewStringUTF(engine->ModelSha256().c_str());
+  // A JNI session runs the ONNX file, so its identity is the file's SHA-256.
+  return env->NewStringUTF(engine->ModelId().c_str());
 }
 
 SHERPA_ONNX_EXTERN_C

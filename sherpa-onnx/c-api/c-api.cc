@@ -49,6 +49,7 @@
 
 #if SHERPA_ONNX_ENABLE_SPEAKER_DIARIZATION == 1
 #include "sherpa-onnx/csrc/offline-speaker-diarization.h"
+#include "sherpa-onnx/csrc/sortformer-model.h"
 #include "sherpa-onnx/csrc/streaming-sortformer-diarization.h"
 #endif
 
@@ -3918,9 +3919,7 @@ SherpaOnnxCreateStreamingSortformerDiarizationWithBackend(
   sherpa_onnx::SortformerDiarizationConfig c;
   c.debug = config->debug != 0;
   ApplyStreamingGeometry(*config, &c.streaming);
-  // Not c.Validate(): it requires an ONNX model file this session does not read.
-  if (!c.streaming.Validate() || !c.frontend.Validate() ||
-      !c.post_processing.Validate()) {
+  if (!c.ValidateForExternalBackend()) {
     SHERPA_ONNX_LOGE("Errors in Sortformer diarization config");
     return nullptr;
   }
@@ -4027,14 +4026,14 @@ int32_t SherpaOnnxStreamingSortformerDiarizationReset(
   });
 }
 
-const char *SherpaOnnxStreamingSortformerDiarizationModelSha256(
+const char *SherpaOnnxStreamingSortformerDiarizationModelId(
     const SherpaOnnxStreamingSortformerDiarization *sd) {
   if (!sd) return nullptr;
   // Owned by the session: the C++ side returns a reference to a member that
   // outlives every call, so no copy and no free function is needed. Copying
   // here would hand callers a buffer they must remember to release for a value
   // that never changes.
-  return sd->impl->ModelSha256().c_str();
+  return sd->impl->ModelId().c_str();
 }
 
 int32_t SherpaOnnxStreamingSortformerDiarizationNumFrames(

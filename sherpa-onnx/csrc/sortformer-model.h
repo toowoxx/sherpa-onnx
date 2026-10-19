@@ -122,9 +122,13 @@ using SortformerForwardFn = std::function<bool(
 
 struct SortformerExternalBackend {
   SortformerForwardFn forward;
-  // Identity of the artifact the backend runs, reported as the model SHA.
+  // Identity of the artifact the backend runs, what ModelId() reports.
   std::string model_id;
 };
+
+// The network behind SortformerModel, run by ONNX Runtime or by an external
+// backend. Defined in sortformer-model.cc.
+class SortformerForward;
 
 class SortformerModel {
  public:
@@ -150,10 +154,12 @@ class SortformerModel {
                                 const std::vector<float> &fifo,
                                 int32_t fifo_lengths) const;
 
-  // SHA-256 of the model file, lowercase hex. It proves which model file a
-  // session ran; a log line naming the path is not enough, because one path
-  // can hold different model files over time.
-  const std::string &ModelSha256() const;
+  // Identity of the network that runs: the SHA-256 of the model file,
+  // lowercase hex, for the ONNX Runtime backend, and the model_id of an
+  // external backend. It proves which model a session ran; a log line naming
+  // the path is not enough, because one path can have different models over
+  // time.
+  const std::string &ModelId() const;
 
   // ONNX Runtime intra-op worker thread ids, so a caller can hand the threads
   // that run inference to a platform scheduling API. Empty when the runtime
@@ -161,12 +167,8 @@ class SortformerModel {
   // them.
   const std::vector<int32_t> &WorkerThreadIds() const;
 
- public:
-  // The backends derive from this; it is not part of the interface.
-  class Impl;
-
  private:
-  std::unique_ptr<Impl> impl_;
+  std::unique_ptr<SortformerForward> impl_;
 };
 
 }  // namespace sherpa_onnx

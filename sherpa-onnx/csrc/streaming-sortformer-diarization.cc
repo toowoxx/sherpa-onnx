@@ -141,7 +141,7 @@ class StreamingSortformerDiarization::Impl {
     return static_cast<int32_t>(track_.size() / config_.streaming.n_spk);
   }
 
-  const std::string &ModelSha256() const { return model_->ModelSha256(); }
+  const std::string &ModelId() const { return model_->ModelId(); }
 
   const std::vector<int32_t> &WorkerThreadIds() const {
     return model_->WorkerThreadIds();
@@ -282,7 +282,8 @@ StreamingSortformerDiarization::StreamingSortformerDiarization(
     : impl_(std::make_unique<Impl>(config)) {}
 
 StreamingSortformerDiarization::StreamingSortformerDiarization(
-    const SortformerDiarizationConfig &config, SortformerExternalBackend backend)
+    const SortformerDiarizationConfig &config,
+    SortformerExternalBackend backend)
     : impl_(std::make_unique<Impl>(config, std::move(backend))) {}
 
 template <typename Manager>
@@ -320,8 +321,8 @@ int32_t StreamingSortformerDiarization::NumFrames() const {
 
 void StreamingSortformerDiarization::Reset() { impl_->Reset(); }
 
-const std::string &StreamingSortformerDiarization::ModelSha256() const {
-  return impl_->ModelSha256();
+const std::string &StreamingSortformerDiarization::ModelId() const {
+  return impl_->ModelId();
 }
 
 const std::vector<int32_t> &StreamingSortformerDiarization::WorkerThreadIds()

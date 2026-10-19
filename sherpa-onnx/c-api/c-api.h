@@ -57,7 +57,7 @@
  *   otherwise end the process through std::terminate.
  * - The functions of these groups that only read a stored field or compare
  *   counters, such as IsOnlineStreamReady, IsEndpoint, Dim, GetSampleRate,
- *   ProcessedSeconds or ModelSha256, call the engine directly.
+ *   ProcessedSeconds or ModelId, call the engine directly.
  *
  * General usage pattern:
  *
@@ -4807,7 +4807,8 @@ typedef struct SherpaOnnxSortformerForwardResult {
  * `forward` is the pure function of the exported graph (see
  * sortformer-model.h) and returns 1 on success. `destroy` is called once with
  * `user_data` when the session is destroyed and may be NULL. `model_id` names
- * the artifact that runs and is reported where the SHA-256 of an ONNX model is.
+ * the artifact that runs and is what
+ * SherpaOnnxStreamingSortformerDiarizationModelId() returns.
  */
 typedef struct SherpaOnnxSortformerExternalBackend {
   void *user_data;
@@ -4931,13 +4932,18 @@ SHERPA_ONNX_API int32_t SherpaOnnxStreamingSortformerDiarizationReset(
     const SherpaOnnxStreamingSortformerDiarization *sd);
 
 /**
- * @brief SHA-256 of the model file this session loaded, lowercase hex.
+ * @brief Identity of the network this session runs.
+ *
+ * For a session of SherpaOnnxCreateStreamingSortformerDiarization() it is the
+ * SHA-256 of the model file, lowercase hex, and for a session of
+ * SherpaOnnxCreateStreamingSortformerDiarizationWithBackend() it is the
+ * `model_id` of the backend.
  *
  * Exists because different model files can occupy the same path, so a log
  * line naming the model PATH does not say what ran. The returned string is
  * owned by the session and stays valid until it is destroyed.
  */
-SHERPA_ONNX_API const char *SherpaOnnxStreamingSortformerDiarizationModelSha256(
+SHERPA_ONNX_API const char *SherpaOnnxStreamingSortformerDiarizationModelId(
     const SherpaOnnxStreamingSortformerDiarization *sd);
 
 /**
