@@ -14,6 +14,7 @@
 
 #include "onnxruntime_cxx_api.h"  // NOLINT
 #include "sherpa-onnx/csrc/online-model-config.h"
+#include "sherpa-onnx/csrc/online-transducer-nemo-encoder-backend.h"
 
 namespace sherpa_onnx {
 
@@ -23,6 +24,12 @@ namespace sherpa_onnx {
 class OnlineTransducerNeMoModel {
  public:
   explicit OnlineTransducerNeMoModel(const OnlineModelConfig &config);
+
+  // The encoder is run by `backend` instead of ONNX Runtime
+  // (online-transducer-nemo-encoder-backend.h). config.transducer.encoder is
+  // not read.
+  OnlineTransducerNeMoModel(const OnlineModelConfig &config,
+                            NemoEncoderExternalBackend backend);
 
   template <typename Manager>
   OnlineTransducerNeMoModel(Manager *mgr, const OnlineModelConfig &config);

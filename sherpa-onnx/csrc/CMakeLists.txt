@@ -892,6 +892,13 @@ if(SHERPA_ONNX_ENABLE_TESTS)
     )
   endif()
 
+  # The external encoder of the streaming NeMo transducer (toowoxx), same shape.
+  if(SHERPA_ONNX_ENABLE_C_API)
+    list(APPEND sherpa_onnx_c_api_test_srcs
+      online-nemo-encoder-backend-test.cc
+    )
+  endif()
+
   function(sherpa_onnx_add_test source)
     get_filename_component(name ${source} NAME_WE)
     set(target_name ${name})

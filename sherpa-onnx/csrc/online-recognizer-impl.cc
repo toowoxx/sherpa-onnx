@@ -235,6 +235,12 @@ std::unique_ptr<OnlineRecognizerImpl> OnlineRecognizerImpl::Create(
   return nullptr;
 }
 
+std::unique_ptr<OnlineRecognizerImpl> OnlineRecognizerImpl::Create(
+    const OnlineRecognizerConfig &config, NemoEncoderExternalBackend backend) {
+  return std::make_unique<OnlineRecognizerTransducerNeMoImpl>(
+      config, std::move(backend));
+}
+
 OnlineRecognizerImpl::OnlineRecognizerImpl(const OnlineRecognizerConfig &config)
     : config_(config) {
   if (!config.rule_fsts.empty()) {

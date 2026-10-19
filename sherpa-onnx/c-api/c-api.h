@@ -492,6 +492,85 @@ SherpaOnnxCreateOnlineRecognizer(
     const SherpaOnnxOnlineRecognizerConfig *config);
 
 /**
+ * @brief What one call of an external NeMo encoder is given.
+ *
+ * All tensors are float32 and row-major, with the layout of the ONNX encoder
+ * without its batch axis. `features` is (n_frames, feature_dim), the graph
+ * takes its transpose. The caches are (layers, channel_time, dim) and
+ * (layers, dim, time_width).
+ */
+typedef struct SherpaOnnxNemoEncoderRequest {
+  const float *features;
+  int32_t n_frames;
+  int32_t feature_dim;
+  const float *cache_last_channel;
+  int64_t cache_last_channel_count;
+  const float *cache_last_time;
+  int64_t cache_last_time_count;
+  int64_t cache_last_channel_len;
+  /** Only read by a multilingual encoder. */
+  int64_t prompt_id;
+} SherpaOnnxNemoEncoderRequest;
+
+/**
+ * @brief Buffers an external NeMo encoder writes its result into.
+ *
+ * `encoded` is (encoded_dim, encoded_frames) with room for `encoded_capacity`
+ * floats, the encoder sets `encoded_frames`. The cache buffers have the sizes
+ * of the request's caches.
+ */
+typedef struct SherpaOnnxNemoEncoderResult {
+  float *encoded;
+  int64_t encoded_capacity;
+  int32_t encoded_frames;
+  float *cache_last_channel;
+  float *cache_last_time;
+  int64_t cache_last_channel_len;
+} SherpaOnnxNemoEncoderResult;
+
+/**
+ * @brief The encoder of a streaming NeMo transducer run by the caller instead
+ *        of ONNX Runtime.
+ *
+ * `run` is the pure function of the exported encoder graph for one stream and
+ * returns 1 on success. `metadata` copies the value of a key of the ONNX
+ * metadata of the encoder (window_size, chunk_shift, the cache shapes,
+ * prompt_dictionary, ...) into `buffer`, zero terminated, and returns its
+ * length, or 0 if the key does not exist. A longer value is cut and its full
+ * length returned. `destroy` is called once with `user_data` when the
+ * recognizer is destroyed and may be NULL.
+ */
+typedef struct SherpaOnnxNemoEncoderExternalBackend {
+  void *user_data;
+  int32_t (*run)(void *user_data, const SherpaOnnxNemoEncoderRequest *request,
+                 SherpaOnnxNemoEncoderResult *result);
+  int32_t (*metadata)(void *user_data, const char *key, char *buffer,
+                      int32_t capacity);
+  void (*destroy)(void *user_data);
+  int32_t feature_dim;
+  /** Number of channels of the encoded frames. */
+  int32_t encoded_dim;
+  /** Nonzero if the encoder takes a language prompt. */
+  int32_t multilingual;
+} SherpaOnnxNemoEncoderExternalBackend;
+
+/**
+ * @brief Create a streaming NeMo transducer recognizer whose encoder is run by
+ *        `backend`.
+ *
+ * The decoder, the joiner, the feature extraction and the decoding loop are
+ * the ones of the ONNX Runtime recognizer. config->model_config.transducer
+ * .encoder is ignored, the decoder, the joiner and the tokens are read.
+ *
+ * On success the recognizer owns `backend` and calls its `destroy`. On failure
+ * (NULL) `destroy` is not called and the caller keeps `user_data`.
+ */
+SHERPA_ONNX_API const SherpaOnnxOnlineRecognizer *
+SherpaOnnxCreateOnlineRecognizerWithNemoEncoderBackend(
+    const SherpaOnnxOnlineRecognizerConfig *config,
+    const SherpaOnnxNemoEncoderExternalBackend *backend);
+
+/**
  * @brief Destroy a streaming recognizer.
  *
  * @param recognizer A pointer returned by SherpaOnnxCreateOnlineRecognizer().

@@ -31,6 +31,7 @@
 #include "sherpa-onnx/csrc/file-utils.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-transducer-decoder.h"
+#include "sherpa-onnx/csrc/online-transducer-nemo-encoder-backend.h"
 #include "sherpa-onnx/csrc/onnx-utils.h"
 #include "sherpa-onnx/csrc/session.h"
 #include "sherpa-onnx/csrc/text-utils.h"
@@ -42,6 +43,21 @@ namespace sherpa_onnx {
 namespace {
 
 constexpr int64_t kDefaultAutoPromptId = 101;
+
+// The metadata of an encoder that the caller runs, answered by its backend.
+// The overload below lets the macros that read the ONNX metadata read it too.
+struct ExternalEncoderMetadata {
+  const NemoEncoderExternalBackend *backend;
+};
+
+// An overload in this namespace hides the one for the ONNX metadata.
+using sherpa_onnx::LookupCustomModelMetaData;
+
+std::string LookupCustomModelMetaData(const ExternalEncoderMetadata &meta_data,
+                                      const char *key,
+                                      OrtAllocator * /*allocator*/) {
+  return meta_data.backend->metadata(key);
+}
 
 std::string StripQuotes(std::string s) {
   s = Trim(s);
@@ -119,7 +135,8 @@ void ParseLanguagePromptDictionary(
   }
 }
 
-bool ReadPromptIdFromMetadata(const Ort::ModelMetadata &meta_data,
+template <typename Metadata>
+bool ReadPromptIdFromMetadata(const Metadata &meta_data,
                               OrtAllocator *allocator, const char *key,
                               int64_t *prompt_id) {
   auto value = LookupCustomModelMetaData(meta_data, key, allocator);
@@ -158,6 +175,23 @@ class OnlineTransducerNeMoModel::Impl {
     InitJoiner(nullptr, 0);
   }
 
+  Impl(const OnlineModelConfig &config, NemoEncoderExternalBackend backend)
+      : config_(config),
+        env_(ORT_LOGGING_LEVEL_ERROR),
+        sess_opts_(GetSessionOptions(config)),
+        allocator_{},
+        backend_(std::move(backend)) {
+    InitExternalEncoder();
+
+    decoder_sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.decoder), sess_opts_);
+    InitDecoder(nullptr, 0);
+
+    joiner_sess_ = std::make_unique<Ort::Session>(
+        env_, SHERPA_ONNX_TO_ORT_PATH(config.transducer.joiner), sess_opts_);
+    InitJoiner(nullptr, 0);
+  }
+
   template <typename Manager>
   Impl(Manager *mgr, const OnlineModelConfig &config)
       : config_(config),
@@ -181,6 +215,11 @@ class OnlineTransducerNeMoModel::Impl {
   std::vector<Ort::Value> RunEncoder(
       Ort::Value features, std::vector<Ort::Value> states,
       const std::vector<int64_t> &language_prompt_ids) {
+    if (backend_.run) {
+      return RunExternalEncoder(std::move(features), std::move(states),
+                                language_prompt_ids);
+    }
+
     Ort::Value &cache_last_channel = states[0];
     Ort::Value &cache_last_time = states[1];
     Ort::Value &cache_last_channel_len = states[2];
@@ -438,6 +477,158 @@ class OnlineTransducerNeMoModel::Impl {
   }
 
  private:
+  // The encoder runs outside of ONNX Runtime, once per stream of the batch.
+  // Returns what the ONNX encoder returns without its length output: the
+  // encoded frames (B, encoded_dim, T') and the three next states.
+  std::vector<Ort::Value> RunExternalEncoder(
+      Ort::Value features, std::vector<Ort::Value> states,
+      const std::vector<int64_t> &language_prompt_ids) {
+    const auto feature_shape = features.GetTensorTypeAndShapeInfo().GetShape();
+    const int64_t batch_size = feature_shape[0];
+    const int64_t n_frames = feature_shape[1];
+    const int64_t channel_count = cache_last_channel_size();
+    const int64_t time_count = cache_last_time_size();
+
+    const int64_t max_frames = n_frames / subsampling_factor_ + 2;
+    const int64_t encoded_capacity = backend_.encoded_dim * max_frames;
+    std::vector<float> encoded(batch_size * encoded_capacity);
+    std::vector<int32_t> encoded_frames(batch_size);
+
+    std::array<int64_t, 4> channel_shape{batch_size, cache_last_channel_dim1_,
+                                         cache_last_channel_dim2_,
+                                         cache_last_channel_dim3_};
+    std::array<int64_t, 4> time_shape{batch_size, cache_last_time_dim1_,
+                                      cache_last_time_dim2_,
+                                      cache_last_time_dim3_};
+    Ort::Value next_channel = Ort::Value::CreateTensor<float>(
+        allocator_, channel_shape.data(), channel_shape.size());
+    Ort::Value next_time = Ort::Value::CreateTensor<float>(
+        allocator_, time_shape.data(), time_shape.size());
+    std::array<int64_t, 1> len_shape{batch_size};
+    Ort::Value next_len = Ort::Value::CreateTensor<int64_t>(
+        allocator_, len_shape.data(), len_shape.size());
+
+    const float *p_features = features.GetTensorData<float>();
+    const float *p_channel = states[0].GetTensorData<float>();
+    const float *p_time = states[1].GetTensorData<float>();
+    const int64_t *p_len = states[2].GetTensorData<int64_t>();
+
+    for (int64_t b = 0; b != batch_size; ++b) {
+      NemoEncoderRequest request;
+      request.features = p_features + b * n_frames * backend_.feature_dim;
+      request.n_frames = static_cast<int32_t>(n_frames);
+      request.feature_dim = backend_.feature_dim;
+      request.cache_last_channel = p_channel + b * channel_count;
+      request.cache_last_channel_count = channel_count;
+      request.cache_last_time = p_time + b * time_count;
+      request.cache_last_time_count = time_count;
+      request.cache_last_channel_len = p_len[b];
+      request.prompt_id =
+          static_cast<int64_t>(language_prompt_ids.size()) == batch_size
+              ? language_prompt_ids[b]
+              : default_prompt_id_;
+
+      NemoEncoderResult result;
+      result.encoded = encoded.data() + b * encoded_capacity;
+      result.encoded_capacity = encoded_capacity;
+      result.cache_last_channel =
+          next_channel.GetTensorMutableData<float>() + b * channel_count;
+      result.cache_last_time =
+          next_time.GetTensorMutableData<float>() + b * time_count;
+
+      if (!backend_.run(request, &result)) {
+        SHERPA_ONNX_LOGE("The external NeMo encoder failed");
+        SHERPA_ONNX_EXIT(-1);
+      }
+
+      encoded_frames[b] = result.encoded_frames;
+      next_len.GetTensorMutableData<int64_t>()[b] =
+          result.cache_last_channel_len;
+    }
+
+    const int32_t frames = encoded_frames[0];
+    std::array<int64_t, 3> out_shape{batch_size, backend_.encoded_dim, frames};
+    Ort::Value out = Ort::Value::CreateTensor<float>(
+        allocator_, out_shape.data(), out_shape.size());
+    const int64_t per_sample = backend_.encoded_dim * frames;
+    for (int64_t b = 0; b != batch_size; ++b) {
+      std::copy(encoded.begin() + b * encoded_capacity,
+                encoded.begin() + b * encoded_capacity + per_sample,
+                out.GetTensorMutableData<float>() + b * per_sample);
+    }
+
+    std::vector<Ort::Value> ans;
+    ans.reserve(4);
+    ans.push_back(std::move(out));
+    ans.push_back(std::move(next_channel));
+    ans.push_back(std::move(next_time));
+    ans.push_back(std::move(next_len));
+    return ans;
+  }
+
+  int64_t cache_last_channel_size() const {
+    return static_cast<int64_t>(cache_last_channel_dim1_) *
+           cache_last_channel_dim2_ * cache_last_channel_dim3_;
+  }
+
+  int64_t cache_last_time_size() const {
+    return static_cast<int64_t>(cache_last_time_dim1_) *
+           cache_last_time_dim2_ * cache_last_time_dim3_;
+  }
+
+  void InitExternalEncoder() {
+    if (!backend_.run || !backend_.metadata || backend_.feature_dim <= 0 ||
+        backend_.encoded_dim <= 0) {
+      SHERPA_ONNX_LOGE(
+          "An external NeMo encoder needs run, metadata, feature_dim and "
+          "encoded_dim");
+      SHERPA_ONNX_EXIT(-1);
+    }
+
+    is_multilingual_ = backend_.multilingual;
+    feat_dim_ = backend_.feature_dim;
+
+    ExternalEncoderMetadata meta_data{&backend_};
+    ReadEncoderMetadata(meta_data, nullptr);
+    InitEncoderStates();
+  }
+
+  template <typename Metadata>
+  void ReadEncoderMetadata(const Metadata &meta_data, OrtAllocator *allocator) {
+    SHERPA_ONNX_READ_META_DATA(vocab_size_, "vocab_size");
+
+    // need to increase by 1 since the blank token is not included in computing
+    // vocab_size in NeMo.
+    vocab_size_ += 1;
+
+    SHERPA_ONNX_READ_META_DATA(window_size_, "window_size");
+    SHERPA_ONNX_READ_META_DATA(chunk_shift_, "chunk_shift");
+    SHERPA_ONNX_READ_META_DATA(subsampling_factor_, "subsampling_factor");
+
+    SHERPA_ONNX_READ_META_DATA_STR_ALLOW_EMPTY(normalize_type_,
+                                               "normalize_type");
+    SHERPA_ONNX_READ_META_DATA(pred_rnn_layers_, "pred_rnn_layers");
+    SHERPA_ONNX_READ_META_DATA(pred_hidden_, "pred_hidden");
+
+    SHERPA_ONNX_READ_META_DATA(cache_last_channel_dim1_,
+                               "cache_last_channel_dim1");
+    SHERPA_ONNX_READ_META_DATA(cache_last_channel_dim2_,
+                               "cache_last_channel_dim2");
+    SHERPA_ONNX_READ_META_DATA(cache_last_channel_dim3_,
+                               "cache_last_channel_dim3");
+    SHERPA_ONNX_READ_META_DATA(cache_last_time_dim1_, "cache_last_time_dim1");
+    SHERPA_ONNX_READ_META_DATA(cache_last_time_dim2_, "cache_last_time_dim2");
+    SHERPA_ONNX_READ_META_DATA(cache_last_time_dim3_, "cache_last_time_dim3");
+
+    if (normalize_type_ == "NA") {
+      normalize_type_ = "";
+    }
+
+    if (is_multilingual_) {
+      InitLanguagePromptIds(meta_data, allocator);
+    }
+  }
+
   void InitEncoder(void *model_data, size_t model_data_length) {
     if (model_data) {
       encoder_sess_ = std::make_unique<Ort::Session>(
@@ -478,44 +669,14 @@ class OnlineTransducerNeMoModel::Impl {
 #endif
     }
 
-    Ort::AllocatorWithDefaultOptions allocator;  // used in the macro below
-    SHERPA_ONNX_READ_META_DATA(vocab_size_, "vocab_size");
-
-    // need to increase by 1 since the blank token is not included in computing
-    // vocab_size in NeMo.
-    vocab_size_ += 1;
-
-    SHERPA_ONNX_READ_META_DATA(window_size_, "window_size");
-    SHERPA_ONNX_READ_META_DATA(chunk_shift_, "chunk_shift");
-    SHERPA_ONNX_READ_META_DATA(subsampling_factor_, "subsampling_factor");
-
-    SHERPA_ONNX_READ_META_DATA_STR_ALLOW_EMPTY(normalize_type_,
-                                               "normalize_type");
-    SHERPA_ONNX_READ_META_DATA(pred_rnn_layers_, "pred_rnn_layers");
-    SHERPA_ONNX_READ_META_DATA(pred_hidden_, "pred_hidden");
-
-    SHERPA_ONNX_READ_META_DATA(cache_last_channel_dim1_,
-                               "cache_last_channel_dim1");
-    SHERPA_ONNX_READ_META_DATA(cache_last_channel_dim2_,
-                               "cache_last_channel_dim2");
-    SHERPA_ONNX_READ_META_DATA(cache_last_channel_dim3_,
-                               "cache_last_channel_dim3");
-    SHERPA_ONNX_READ_META_DATA(cache_last_time_dim1_, "cache_last_time_dim1");
-    SHERPA_ONNX_READ_META_DATA(cache_last_time_dim2_, "cache_last_time_dim2");
-    SHERPA_ONNX_READ_META_DATA(cache_last_time_dim3_, "cache_last_time_dim3");
-
-    if (normalize_type_ == "NA") {
-      normalize_type_ = "";
-    }
-
-    if (is_multilingual_) {
-      InitLanguagePromptIds(meta_data, allocator);
-    }
+    Ort::AllocatorWithDefaultOptions allocator;
+    ReadEncoderMetadata(meta_data, allocator);
 
     InitEncoderStates();
   }
 
-  void InitLanguagePromptIds(const Ort::ModelMetadata &meta_data,
+  template <typename Metadata>
+  void InitLanguagePromptIds(const Metadata &meta_data,
                              OrtAllocator *allocator) {
     auto dict = LookupCustomModelMetaData(meta_data, "prompt_dictionary",
                                           allocator);
@@ -638,6 +799,9 @@ class OnlineTransducerNeMoModel::Impl {
   Ort::SessionOptions sess_opts_;
   Ort::AllocatorWithDefaultOptions allocator_;
 
+  // Set instead of encoder_sess_ when the caller runs the encoder.
+  NemoEncoderExternalBackend backend_;
+
   std::unique_ptr<Ort::Session> encoder_sess_;
   std::unique_ptr<Ort::Session> decoder_sess_;
   std::unique_ptr<Ort::Session> joiner_sess_;
@@ -694,6 +858,10 @@ class OnlineTransducerNeMoModel::Impl {
 OnlineTransducerNeMoModel::OnlineTransducerNeMoModel(
     const OnlineModelConfig &config)
     : impl_(std::make_unique<Impl>(config)) {}
+
+OnlineTransducerNeMoModel::OnlineTransducerNeMoModel(
+    const OnlineModelConfig &config, NemoEncoderExternalBackend backend)
+    : impl_(std::make_unique<Impl>(config, std::move(backend))) {}
 
 template <typename Manager>
 OnlineTransducerNeMoModel::OnlineTransducerNeMoModel(

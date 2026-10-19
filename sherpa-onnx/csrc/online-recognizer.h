@@ -17,6 +17,7 @@
 #include "sherpa-onnx/csrc/online-model-config.h"
 #include "sherpa-onnx/csrc/online-stream.h"
 #include "sherpa-onnx/csrc/online-transducer-model-config.h"
+#include "sherpa-onnx/csrc/online-transducer-nemo-encoder-backend.h"
 #include "sherpa-onnx/csrc/parse-options.h"
 
 namespace sherpa_onnx {
@@ -163,6 +164,12 @@ class OnlineRecognizerImpl;
 class OnlineRecognizer {
  public:
   explicit OnlineRecognizer(const OnlineRecognizerConfig &config);
+
+  // A NeMo transducer whose encoder is run by `backend`
+  // (online-transducer-nemo-encoder-backend.h). The encoder path of the config
+  // is not read.
+  OnlineRecognizer(const OnlineRecognizerConfig &config,
+                   NemoEncoderExternalBackend backend);
 
   template <typename Manager>
   OnlineRecognizer(Manager *mgr, const OnlineRecognizerConfig &config);

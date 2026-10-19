@@ -40,11 +40,24 @@ class OnlineRecognizerTransducerNeMoImpl : public OnlineRecognizerImpl {
  public:
   explicit OnlineRecognizerTransducerNeMoImpl(
       const OnlineRecognizerConfig &config)
+      : OnlineRecognizerTransducerNeMoImpl(
+            config,
+            std::make_unique<OnlineTransducerNeMoModel>(config.model_config)) {}
+
+  // The encoder is run by `backend` (online-transducer-nemo-encoder-backend.h).
+  OnlineRecognizerTransducerNeMoImpl(const OnlineRecognizerConfig &config,
+                                     NemoEncoderExternalBackend backend)
+      : OnlineRecognizerTransducerNeMoImpl(
+            config, std::make_unique<OnlineTransducerNeMoModel>(
+                        config.model_config, std::move(backend))) {}
+
+  OnlineRecognizerTransducerNeMoImpl(
+      const OnlineRecognizerConfig &config,
+      std::unique_ptr<OnlineTransducerNeMoModel> model)
       : OnlineRecognizerImpl(config),
         config_(config),
         endpoint_(config_.endpoint_config),
-        model_(
-            std::make_unique<OnlineTransducerNeMoModel>(config.model_config)) {
+        model_(std::move(model)) {
     if (!config.model_config.tokens_buf.empty()) {
       symbol_table_ = SymbolTable(config.model_config.tokens_buf, false);
     } else {

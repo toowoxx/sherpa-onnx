@@ -93,7 +93,30 @@ static std::invoke_result_t<Body> ReturnFailureOnException(
   return {};
 }
 
+namespace {
+
+// The user data of an external backend, released through the caller's
+// destroy when the session is destroyed. The create function sets it only
+// once the engine exists, so a failed create leaves the user data to the
+// caller, as c-api.h promises.
+struct ExternalBackendOwner {
+  ExternalBackendOwner() = default;
+  ExternalBackendOwner(const ExternalBackendOwner &) = delete;
+  ExternalBackendOwner &operator=(const ExternalBackendOwner &) = delete;
+  ~ExternalBackendOwner() {
+    if (destroy) destroy(user_data);
+  }
+
+  void *user_data = nullptr;
+  void (*destroy)(void *user_data) = nullptr;
+};
+
+}  // namespace
+
 struct SherpaOnnxOnlineRecognizer {
+  // Declared before the engine, so it is destroyed after the engine made its
+  // last call into the backend. Empty for an ONNX Runtime recognizer.
+  ExternalBackendOwner backend;
   std::unique_ptr<sherpa_onnx::OnlineRecognizer> impl;
 };
 
@@ -239,6 +262,111 @@ const SherpaOnnxOnlineRecognizer *SherpaOnnxCreateOnlineRecognizer(
         auto recognizer = std::make_unique<SherpaOnnxOnlineRecognizer>();
         recognizer->impl =
             std::make_unique<sherpa_onnx::OnlineRecognizer>(recognizer_config);
+        return recognizer.release();
+      });
+}
+
+namespace {
+
+// Runs the C encoder of an external NeMo backend. The only place where the
+// engine's request and result are copied to their C twins and back.
+bool RunExternalNemoEncoder(
+    decltype(SherpaOnnxNemoEncoderExternalBackend::run) run, void *user_data,
+    const sherpa_onnx::NemoEncoderRequest &request,
+    sherpa_onnx::NemoEncoderResult *result) {
+  SherpaOnnxNemoEncoderRequest in;
+  in.features = request.features;
+  in.n_frames = request.n_frames;
+  in.feature_dim = request.feature_dim;
+  in.cache_last_channel = request.cache_last_channel;
+  in.cache_last_channel_count = request.cache_last_channel_count;
+  in.cache_last_time = request.cache_last_time;
+  in.cache_last_time_count = request.cache_last_time_count;
+  in.cache_last_channel_len = request.cache_last_channel_len;
+  in.prompt_id = request.prompt_id;
+
+  SherpaOnnxNemoEncoderResult out;
+  out.encoded = result->encoded;
+  out.encoded_capacity = result->encoded_capacity;
+  out.encoded_frames = 0;
+  out.cache_last_channel = result->cache_last_channel;
+  out.cache_last_time = result->cache_last_time;
+  out.cache_last_channel_len = 0;
+
+  if (run(user_data, &in, &out) != 1) return false;
+  result->encoded_frames = out.encoded_frames;
+  result->cache_last_channel_len = out.cache_last_channel_len;
+  return true;
+}
+
+// The value of a metadata key, or an empty string. A value longer than the
+// first buffer is fetched again with the length the caller reported.
+std::string LookUpExternalNemoMetadata(
+    decltype(SherpaOnnxNemoEncoderExternalBackend::metadata) metadata,
+    void *user_data, const std::string &key) {
+  std::string value(256, '\0');
+  int32_t length = metadata(user_data, key.c_str(), value.data(),
+                            static_cast<int32_t>(value.size()));
+  if (length > static_cast<int32_t>(value.size()) - 1) {
+    value.assign(length + 1, '\0');
+    length = metadata(user_data, key.c_str(), value.data(),
+                      static_cast<int32_t>(value.size()));
+  }
+  value.resize(length > 0 ? length : 0);
+  return value;
+}
+
+}  // namespace
+
+const SherpaOnnxOnlineRecognizer *
+SherpaOnnxCreateOnlineRecognizerWithNemoEncoderBackend(
+    const SherpaOnnxOnlineRecognizerConfig *config,
+    const SherpaOnnxNemoEncoderExternalBackend *backend) {
+  if (!config || !backend || !backend->run || !backend->metadata) {
+    SHERPA_ONNX_LOGE("a config and an encoder with run and metadata are needed");
+    return nullptr;
+  }
+
+  sherpa_onnx::OnlineRecognizerConfig recognizer_config =
+      GetOnlineRecognizerConfig(config);
+
+  // Not recognizer_config.Validate(): it requires an ONNX encoder file that
+  // this recognizer does not read.
+  const auto &transducer = recognizer_config.model_config.transducer;
+  if (!sherpa_onnx::FileExists(transducer.decoder) ||
+      !sherpa_onnx::FileExists(transducer.joiner) ||
+      !(recognizer_config.model_config.tokens.empty()
+            ? !recognizer_config.model_config.tokens_buf.empty()
+            : sherpa_onnx::FileExists(recognizer_config.model_config.tokens))) {
+    SHERPA_ONNX_LOGE("the decoder, the joiner or the tokens do not exist");
+    return nullptr;
+  }
+
+  const auto run = backend->run;
+  const auto metadata = backend->metadata;
+  void *const user_data = backend->user_data;
+
+  sherpa_onnx::NemoEncoderExternalBackend external;
+  external.run = [run, user_data](const sherpa_onnx::NemoEncoderRequest &request,
+                                  sherpa_onnx::NemoEncoderResult *result) {
+    return RunExternalNemoEncoder(run, user_data, request, result);
+  };
+  external.metadata = [metadata, user_data](const std::string &key) {
+    return LookUpExternalNemoMetadata(metadata, user_data, key);
+  };
+  external.feature_dim = backend->feature_dim;
+  external.encoded_dim = backend->encoded_dim;
+  external.multilingual = backend->multilingual != 0;
+
+  return ReturnFailureOnException(
+      __func__, [&]() -> const SherpaOnnxOnlineRecognizer * {
+        auto recognizer = std::make_unique<SherpaOnnxOnlineRecognizer>();
+        recognizer->impl = std::make_unique<sherpa_onnx::OnlineRecognizer>(
+            recognizer_config, std::move(external));
+        // Only now: a recognizer that failed to build leaves the backend to
+        // the caller.
+        recognizer->backend.user_data = user_data;
+        recognizer->backend.destroy = backend->destroy;
         return recognizer.release();
       });
 }
@@ -3793,26 +3921,6 @@ void SherpaOfflineDiacritizationFreeText(const char *text) {
 // C twin of sherpa-onnx/jni/streaming-sortformer-diarization.cc. Both wrap the
 // same C++ session; this one exists for consumers that cannot reach JNI, which
 // on Apple platforms is all of them.
-
-namespace {
-
-// The user data of an external backend, released through the caller's
-// destroy when the session is destroyed. The create function sets it only
-// once the engine exists, so a failed create leaves the user data to the
-// caller, as c-api.h promises.
-struct ExternalBackendOwner {
-  ExternalBackendOwner() = default;
-  ExternalBackendOwner(const ExternalBackendOwner &) = delete;
-  ExternalBackendOwner &operator=(const ExternalBackendOwner &) = delete;
-  ~ExternalBackendOwner() {
-    if (destroy) destroy(user_data);
-  }
-
-  void *user_data = nullptr;
-  void (*destroy)(void *user_data) = nullptr;
-};
-
-}  // namespace
 
 struct SherpaOnnxStreamingSortformerDiarization {
   // Declared before the engine, so it is destroyed after the engine made its

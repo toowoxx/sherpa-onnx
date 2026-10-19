@@ -221,6 +221,10 @@ std::string OnlineRecognizerConfig::ToString() const {
 OnlineRecognizer::OnlineRecognizer(const OnlineRecognizerConfig &config)
     : impl_(OnlineRecognizerImpl::Create(config)) {}
 
+OnlineRecognizer::OnlineRecognizer(const OnlineRecognizerConfig &config,
+                                   NemoEncoderExternalBackend backend)
+    : impl_(OnlineRecognizerImpl::Create(config, std::move(backend))) {}
+
 template <typename Manager>
 OnlineRecognizer::OnlineRecognizer(Manager *mgr,
                                    const OnlineRecognizerConfig &config)

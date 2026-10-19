@@ -13,6 +13,7 @@
 #include "sherpa-onnx/csrc/homophone-replacer.h"
 #include "sherpa-onnx/csrc/macros.h"
 #include "sherpa-onnx/csrc/online-recognizer.h"
+#include "sherpa-onnx/csrc/online-transducer-nemo-encoder-backend.h"
 #include "sherpa-onnx/csrc/online-stream.h"
 
 namespace sherpa_onnx {
@@ -23,6 +24,10 @@ class OnlineRecognizerImpl {
 
   static std::unique_ptr<OnlineRecognizerImpl> Create(
       const OnlineRecognizerConfig &config);
+
+  // A NeMo transducer whose encoder is run by `backend`.
+  static std::unique_ptr<OnlineRecognizerImpl> Create(
+      const OnlineRecognizerConfig &config, NemoEncoderExternalBackend backend);
 
   template <typename Manager>
   OnlineRecognizerImpl(Manager *mgr, const OnlineRecognizerConfig &config);
